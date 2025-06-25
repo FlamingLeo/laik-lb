@@ -1,5 +1,6 @@
 # Build the C examples
 foreach (example
+    "lb"
     "jac1d"
     "jac2d"
     "jac2d-ser"

@@ -2,6 +2,7 @@
 *profiling.txt
 *.csv
 *.out
+*.log
 min
 resize
 vsum
@@ -13,6 +14,7 @@ jac2d
 jac2d-ser
 jac3d
 jac3d-ll
+lb
 markov-ser
 markov
 markov2
@@ -28,3 +30,4 @@ README-example
 /sqrtcalc.c
 /test.txt
 /vsum3
+lbviz/*.png

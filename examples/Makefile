@@ -6,7 +6,7 @@ OPT=-g
 
 EXAMPLES = min vsum vsum2 spmv spmv2 \
     jac1d jac2d jac2d-ser jac3d \
-    markov-ser markov markov2 \
+    lb markov-ser markov markov2 \
     propagation1d propagation2d \
     resize vsum3 \
     ping_pong \
@@ -37,6 +37,8 @@ jac1d: jac1d.o $(LAIKLIB)
 jac2d: jac2d.o $(LAIKLIB)
 
 jac3d: jac3d.o $(LAIKLIB)
+
+lb: lb.o -lm $(LAIKLIB)
 
 markov: markov.o $(LAIKLIB)
 
