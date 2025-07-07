@@ -66,11 +66,11 @@ int main(int argc, char* argv[])
     int64_t x1, x2;
 
     // for global sum, used for residuum: 1 double accessible by all
-    Laik_Space* sp1 = laik_new_space_1d(inst, 1);
-    Laik_Partitioning* pSum = laik_new_partitioning(laik_All, world, sp1, 0);
-    Laik_Data* sumD = laik_new_data(sp1, laik_Double);
-    laik_data_set_name(sumD, "sum");
-    laik_switchto_partitioning(sumD, pSum, LAIK_DF_None, LAIK_RO_None);
+    Laik_Space* sumSpace = laik_new_space_1d(inst, 1);
+    Laik_Partitioning* sumPartitioning = laik_new_partitioning(laik_All, world, sumSpace, 0);
+    Laik_Data* sumData = laik_new_data(sumSpace, laik_Double);
+    laik_data_set_name(sumData, "sum");
+    laik_switchto_partitioning(sumData, sumPartitioning, LAIK_DF_None, LAIK_RO_None);
 
     // two 1d arrays for jacobi, using same space
     Laik_Space* space = laik_new_space_1d(inst, size);
@@ -119,10 +119,8 @@ int main(int argc, char* argv[])
             baseW[off] = hiValue;
         }
         laik_log(2, "Init done\n");
-    }
-    else {
+    } else {
         // joining process
-
         // when joining for uneven iteration, data got written to data2 to be preserved
         if ((iter & 1) == 1) { dRead = data1; dWrite = data2; }
         else                 { dRead = data2; dWrite = data1; }
@@ -176,10 +174,12 @@ int main(int argc, char* argv[])
             assert(off == 0);
             baseW[off] = loValue;
             x1++;
-        }
-        else {
+        } else {
             // start at inner border: adjust baseR such that
             //  baseR[i] and baseW[i] correspond to same global index
+            //
+            // W:    [_, _, ..., _]
+            // R: [_, _, _, ..., _, _] (corner halo) 
             assert(laik_local2global_1d(dWrite, 0) ==
                    laik_local2global_1d(dRead, 0) + 1);
             baseR++;
@@ -191,7 +191,9 @@ int main(int argc, char* argv[])
             x2--;
         }
 
-        // do jacobi
+        ///////////////
+        // do jacobi //
+        ///////////////
 
         // check for residuum every 10 iterations (3 Flops more per update)
         if ((iter % 10) == 0) {
@@ -207,11 +209,11 @@ int main(int argc, char* argv[])
             res_iters++;
 
             // calculate global residuum
-            laik_switchto_flow(sumD, LAIK_DF_None, LAIK_RO_None);
-            laik_get_map_1d(sumD, 0, (void**) &sumPtr, 0);
+            laik_switchto_flow(sumData, LAIK_DF_None, LAIK_RO_None);
+            laik_get_map_1d(sumData, 0, (void**) &sumPtr, 0);
             *sumPtr = res;
-            laik_switchto_flow(sumD, LAIK_DF_Preserve, LAIK_RO_Sum);
-            laik_get_map_1d(sumD, 0, (void**) &sumPtr, 0);
+            laik_switchto_flow(sumData, LAIK_DF_Preserve, LAIK_RO_Sum);
+            laik_get_map_1d(sumData, 0, (void**) &sumPtr, 0);
             res = *sumPtr;
 
             if (iter > 0) {
@@ -230,13 +232,12 @@ int main(int argc, char* argv[])
                 t2 = t;
             }
 
-            if (laik_myid(laik_data_get_group(sumD)) == 0) {
+            if (laik_myid(laik_data_get_group(sumData)) == 0) {
                 printf("Residuum after %2d iters: %f\n", iter+1, res);
             }
 
             if (res < .001) break;
-        }
-        else {
+        } else {
             for(int64_t i = x1; i < x2; i++) {
                 baseW[i] = 0.5 * (baseR[i-1] + baseR[i+1]);
             }
@@ -272,10 +273,10 @@ int main(int argc, char* argv[])
                 world = newworld;
 
                 Laik_Partitioning* pSumNew;
-                pSumNew = laik_new_partitioning(laik_All, world, sp1, 0);
-                laik_switchto_partitioning(sumD, pSumNew, LAIK_DF_None, LAIK_RO_None);
-                laik_free_partitioning(pSum);
-                pSum = pSumNew;
+                pSumNew = laik_new_partitioning(laik_All, world, sumSpace, 0);
+                laik_switchto_partitioning(sumData, pSumNew, LAIK_DF_None, LAIK_RO_None);
+                laik_free_partitioning(sumPartitioning);
+                sumPartitioning = pSumNew;
 
                 Laik_Partitioning *pWriteNew, *pReadNew;
                 pWriteNew = laik_new_partitioning(prWrite, world, space, 0);
@@ -321,14 +322,14 @@ int main(int argc, char* argv[])
     for(uint64_t i = 0; i < countW; i++) sum += baseW[i];
 
     // global reduction of local sum values
-    laik_switchto_flow(sumD, LAIK_DF_None, LAIK_RO_None);
-    laik_get_map_1d(sumD, 0, (void**) &sumPtr, 0);
+    laik_switchto_flow(sumData, LAIK_DF_None, LAIK_RO_None);
+    laik_get_map_1d(sumData, 0, (void**) &sumPtr, 0);
     *sumPtr = sum;
-    laik_switchto_flow(sumD, LAIK_DF_Preserve, LAIK_RO_Sum);
-    laik_get_map_1d(sumD, 0, (void**) &sumPtr, 0);
+    laik_switchto_flow(sumData, LAIK_DF_Preserve, LAIK_RO_Sum);
+    laik_get_map_1d(sumData, 0, (void**) &sumPtr, 0);
     sum = *sumPtr;
 
-    if (laik_myid(laik_data_get_group(sumD)) == 0) {
+    if (laik_myid(laik_data_get_group(sumData)) == 0) {
         printf("Global value sum after %d iterations: %f\n",
                iter, sum);
     }

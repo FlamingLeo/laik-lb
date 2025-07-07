@@ -3,6 +3,7 @@
 *.csv
 *.out
 *.log
+test.c
 min
 resize
 vsum
@@ -10,11 +11,14 @@ vsum2
 spmv
 spmv2
 jac1d
+jac1d-ser
 jac2d
+jac2d-lb
 jac2d-ser
 jac3d
 jac3d-ll
 lb
+test
 markov-ser
 markov
 markov2
@@ -30,4 +34,3 @@ README-example
 /sqrtcalc.c
 /test.txt
 /vsum3
-lbviz/*.png

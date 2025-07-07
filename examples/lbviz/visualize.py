@@ -38,7 +38,7 @@ def load_array_from_tuples(filename):
     return array
 
 # 2. visualize (numpy) array or list using matplotlib
-def visualize_array_as_image(array, cmap='gist_rainbow', show_colorbar=True, orientation='horizontal'):
+def visualize_array_as_image(array, cmap='gist_rainbow', show_colorbar=True, orientation='horizontal', task_legend=False):
     array = np.array(array)
     
     # check if 1d, then visualize
@@ -52,15 +52,16 @@ def visualize_array_as_image(array, cmap='gist_rainbow', show_colorbar=True, ori
     plt.imshow(array, cmap=cmap, interpolation='nearest', aspect='auto')
 
     # create task legend
-    unique_vals = np.unique(array)
-    norm = mcolors.Normalize(vmin=unique_vals.min(), vmax=unique_vals.max())
-    cmap_obj = plt.cm.get_cmap(cmap)
-    patches = []
-    for val in unique_vals:
-        color = cmap_obj(norm(val))
-        patches.append(mpatches.Patch(color=color, label=str(int(val))))
-    plt.legend(handles=patches, title='Task', bbox_to_anchor=(1.05, 1), loc='upper left')
-    plt.tight_layout(rect=[0, 0, 1, 1])
+    if task_legend:
+        unique_vals = np.unique(array)
+        norm = mcolors.Normalize(vmin=unique_vals.min(), vmax=unique_vals.max())
+        cmap_obj = plt.cm.get_cmap(cmap)
+        patches = []
+        for val in unique_vals:
+            color = cmap_obj(norm(val))
+            patches.append(mpatches.Patch(color=color, label=str(int(val))))
+        plt.legend(handles=patches, title='Task', bbox_to_anchor=(1.05, 1), loc='upper left')
+        plt.tight_layout(rect=[0, 0, 1, 1])
 
     # display plot
     timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')

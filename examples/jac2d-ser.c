@@ -29,9 +29,30 @@
 #include <stdint.h>
 #include <sys/time.h>
 
+#define FILENAME "lbviz/array_data.txt"
+
 // boundary values
 double loRowValue = -5.0, hiRowValue = 10.0;
 double loColValue = -10.0, hiColValue = 5.0;
+
+// ##################################
+static void export_to_file(uint64_t xsizeW, uint64_t ysizeW, uint64_t ystrideW, double* baseW)
+{
+    FILE *fp = fopen(FILENAME, "w");
+    if (!fp) return;
+
+    for(uint64_t y = 0; y < ysizeW; y++)
+        for(uint64_t x = 0; x < xsizeW; x++)
+            fprintf(fp, "((%ld, %ld),%.2f)\n", x, y, baseW[y * ystrideW + x]);
+
+    fclose(fp);     
+}
+
+static void visualize()
+{
+    system("python3 lbviz/visualize.py");
+}
+// ##################################
 
 double wtime()
 {
@@ -52,8 +73,8 @@ int main(int argc, char* argv[])
     if (argc > 1) size = atoi(argv[1]);
     if (argc > 2) maxiter = atoi(argv[2]);
 
-    if (size == 0) size = 2500; // 6.25 mio entries
-    if (maxiter == 0) maxiter = 50;
+    if (size == 0) size = 100; // 100² entries
+    if (maxiter == 0) maxiter = 100;
 
     printf("%d x %d cells (mem %.1f MB), running %d iterations\n",
            size, size, .000016 * size * size, maxiter);
@@ -115,7 +136,9 @@ int main(int argc, char* argv[])
         for(uint64_t y = 0; y < ysizeW; y++)
             baseW[y * ystrideW + xsizeW - 1] = hiColValue;
 
-        // do jacobi
+        ///////////////
+        // do jacobi //
+        ///////////////
 
         // check for residuum every 10 iterations (3 Flops more per update)
         if ((iter % 10) == 0) {
@@ -193,6 +216,9 @@ int main(int argc, char* argv[])
 
     printf("Global value sum after %d iterations: %f\n",
            iter, sum);
+           
+    export_to_file(xsizeW, ysizeW, ystrideW, baseW);
+    visualize();
 
     free(data1);
     free(data2);

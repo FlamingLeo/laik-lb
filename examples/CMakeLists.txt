@@ -1,8 +1,11 @@
 # Build the C examples
 foreach (example
     "lb"
+    "test"
     "jac1d"
+    "jac1d-ser"
     "jac2d"
+    "jac2d-lb"
     "jac2d-ser"
     "jac3d"
     "markov"
