@@ -73,7 +73,7 @@ int main(int argc, char* argv[])
     if (argc > 1) size = atoi(argv[1]);
     if (argc > 2) maxiter = atoi(argv[2]);
 
-    if (size == 0) size = 100; // 100² entries
+    if (size == 0) size = 2500;
     if (maxiter == 0) maxiter = 100;
 
     printf("%d x %d cells (mem %.1f MB), running %d iterations\n",

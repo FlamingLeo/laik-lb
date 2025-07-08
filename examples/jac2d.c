@@ -117,7 +117,7 @@ int main(int argc, char* argv[])
     if (argc > arg + 2) repart = atoi(argv[arg + 2]);
 
     if (size == 0) size = 2500; // 6.25 mio entries
-    if (maxiter == 0) maxiter = 50;
+    if (maxiter == 0) maxiter = 100;
 
     if (laik_myid(world) == 0) {
         printf("%d x %d cells (mem %.1f MB), running %d iterations with %d tasks",

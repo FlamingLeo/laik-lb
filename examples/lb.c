@@ -26,39 +26,6 @@
 #define VISUALIZE(_id) (void)0
 #endif
 
-//////////////////////
-// helper functions //
-//////////////////////
-
-// difference between minimum and maximum of a double array
-static double min_max_difference(double *arr, size_t size)
-{
-    assert(size > 0);
-    double max = arr[0];
-    double min = arr[0];
-    for (size_t i = 1; i < size; i++)
-    {
-        if (arr[i] > max)
-            max = arr[i];
-        if (arr[i] < min)
-            min = arr[i];
-    }
-    return max - min;
-}
-
-// print times (elements in timearr) since last rebalance
-static void print_times(double *timearr, size_t gsize, double maxdiff)
-{
-    printf("[LB] times in s since last rebalance: [");
-    for (size_t i = 0; i < gsize; ++i)
-    {
-        printf("%.2f", timearr[i]);
-        if (i < gsize - 1)
-            printf(", ");
-    }
-    printf("], max dt: %.2f\n", maxdiff);
-}
-
 // export indices associated with tasks to newline-separated file for visualization purposes
 //
 // format:
@@ -276,8 +243,7 @@ int main(int argc, char *argv[])
 
 /*
 TODOs:
-- jacobi, workload on global coords
-- incremental partitioner
 - browser trace (profiling?)
+- incremental partitioner
 - hpc
 */

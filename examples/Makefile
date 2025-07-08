@@ -38,7 +38,7 @@ jac1d-ser: jac1d-ser.o $(LAIKLIB)
 
 jac2d: jac2d.o $(LAIKLIB)
 
-jac2d-lb: jac2d-lb.o $(LAIKLIB)
+jac2d-lb: jac2d-lb.o -lm $(LAIKLIB)
 
 jac3d: jac3d.o $(LAIKLIB)
 
