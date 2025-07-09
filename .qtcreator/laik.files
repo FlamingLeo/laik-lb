@@ -96,7 +96,6 @@
 ../examples/jac2d-ser.c
 ../examples/jac3d.c
 ../examples/lb.c
-../examples/test.c
 ../examples/markov-ser.c
 ../examples/markov.c
 ../examples/markov2.c

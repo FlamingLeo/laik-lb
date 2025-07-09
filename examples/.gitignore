@@ -1,8 +1,13 @@
 *.dSYM
-*profiling.txt
+*.data
+*.perf
+*.old
 *.csv
 *.out
 *.log
+*profiling.txt
+perf.*
+perf/
 test.c
 min
 resize
