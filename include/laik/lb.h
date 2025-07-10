@@ -34,7 +34,7 @@ double get_range_weight_from_index_2d(RangeWeight *rweights, unsigned rwcount, i
 // calculate range weights, assuming one contiguous range per task
 //
 // TODO: non-contiguous ranges (i.e. multiple ranges per task with different workloads)
-void get_range_weights(RangeWeight *rweights, Laik_RangeList *lr, double *timearr, int dims);
+void calc_range_weights(RangeWeight *rweights, Laik_RangeList *lr, double *timearr, int dims);
 
 // main rcb function
 void runRCBPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams *p);

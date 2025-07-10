@@ -7,5 +7,6 @@ cd "${SCRIPT_DIR}/.."
 find . -name 'perf.*' -type f -delete
 find . -name '*.perf' -type f -delete
 find . -name '*.data' -type f -delete
+find . -name '*.mpiP' -type f -delete
 find . -name '*.old' -type f -delete
 find . -name '*perf*' -type d -delete

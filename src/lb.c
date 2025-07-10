@@ -78,7 +78,7 @@ double get_range_weight_from_index_2d(RangeWeight *rweights, unsigned rwcount, i
     return 0.0;
 }
 
-void get_range_weights(RangeWeight *rweights, Laik_RangeList *lr, double *timearr, int dims)
+void calc_range_weights(RangeWeight *rweights, Laik_RangeList *lr, double *timearr, int dims)
 {
     if (dims == 1)
     {
@@ -380,9 +380,9 @@ Laik_Partitioning *laik_lb_balance(Laik_Partitioning *partitioning /*, Laik_Part
         print_times(timearr, gsize, maxdiff);
 
     // calculate weights for each range
-    Laik_RangeList *lr = laik_partitioning_myranges(partitioning);
+    Laik_RangeList *lr = laik_partitioning_allranges(partitioning);
     RangeWeight rweights[lr->count];
-    get_range_weights(rweights, lr, timearr, dims);
+    calc_range_weights(rweights, lr, timearr, dims);
 
     // use task weights to create new partitioning using RCB
     Laik_Partitioner *nparter = laik_new_rcb_partitioner(rweights, lr->count, gsize, dims);

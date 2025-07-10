@@ -104,17 +104,23 @@ static void visualize()
 
 #ifdef WORKLOAD
 #define DO_WORKLOAD(_iter)                                                       \
+    /* iter: current iteration inside loop */                                    \
+    /* pWrite: pointer to write partition */                                     \
     if ((_iter == 0) || (iter < _iter))                                          \
     {                                                                            \
         int64_t globFromX, globToX, globFromY, globToY;                          \
         laik_my_range_2d(pWrite, 0, &globFromX, &globToX, &globFromY, &globToY); \
         int itercount = (globFromX + x) * (globFromY + y) / 5000;                \
-        volatile double sink = 0.0;                                              \
+        volatile double sink = 0.0; /* volatile to prevent optimizing out */     \
         for (int k = 0; k < itercount; ++k)                                      \
             sink += baseR[y * ystrideR + x] * 0.0 + k * 1e-9;                    \
     }
 
 #define LOAD_BALANCE(_iter)                                                          \
+    /* iter: current iteration inside loop */                                        \
+    /* npWrite: pointer to recalculated write partition */                           \
+    /* pWrite: pointer to old write partition, may be replaced */                    \
+    /* npRead: pointer to new read partition based on new write partition borders */ \
     if ((_iter == 0) || (iter < _iter))                                              \
     {                                                                                \
         if ((npWrite = laik_lb_balance(pWrite)) == pWrite)                           \
@@ -134,7 +140,6 @@ static void visualize()
 #define DO_WORKLOAD(_iter) (void)0;
 #define LOAD_BALANCE(_iter) (void)0;
 #endif
-
 // ######################################################### NEW
 
 // boundary values

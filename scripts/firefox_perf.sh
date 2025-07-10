@@ -24,7 +24,7 @@ mkdir -p perf
 sudo perf record -g -F 999 mpirun -n "$n" --allow-run-as-root "./$cmd" "${args[@]}"
 
 sudo chown $USER perf.data
-perf script -F +pid > firefox.perf
+perf script -F +pid > "$(date +%F_%H-%M-%S).perf"
 
 # housekeeping
 mv perf.* perf
