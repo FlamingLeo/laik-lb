@@ -44,8 +44,13 @@ static void print_times(double *timearr, size_t gsize, double maxdiff)
 // rcb partitioner //
 /////////////////////
 
-// TODO: make this incremental
-double get_range_weight_from_index_1d(RangeWeight *rweights, unsigned rwcount, int idx)
+// get range weight from index inside of range, 0 else
+//
+// note 1: i was considering making the 1d and 2d versions a single function, but given that it's called in a loop,
+//         checking the dimensions every single time (e.g. if(dims == 1) ... else ...) would be inefficient
+// note 2: one could also create a new space containing only the associated weights, which would make lookup O(1),
+//         but would also blow up the amount of memory used
+static double get_range_weight_from_index_1d(RangeWeight *rweights, unsigned rwcount, int idx)
 {
     for (size_t i = 0; i < rwcount; ++i)
     {
@@ -54,13 +59,15 @@ double get_range_weight_from_index_1d(RangeWeight *rweights, unsigned rwcount, i
         int64_t to = r.to.i[0];
 
         if (idx >= from && idx < to)
+        {
             return rweights[i].weight;
+        }
     }
 
     return 0.0;
 }
 
-double get_range_weight_from_index_2d(RangeWeight *rweights, unsigned rwcount, int x, int y)
+static double get_range_weight_from_index_2d(RangeWeight *rweights, unsigned rwcount, int x, int y)
 {
     for (size_t i = 0; i < rwcount; ++i)
     {
@@ -72,14 +79,22 @@ double get_range_weight_from_index_2d(RangeWeight *rweights, unsigned rwcount, i
         int64_t to_y = r.to.i[1];
 
         if (x >= from_x && y >= from_y && x < to_x && y < to_y)
+        {
             return rweights[i].weight;
+        }
     }
 
     return 0.0;
 }
 
-void calc_range_weights(RangeWeight *rweights, Laik_RangeList *lr, double *timearr, int dims)
+// calculate range weights, assuming one contiguous range per task
+//
+// TODO: non-contiguous ranges (i.e. multiple ranges per task with different workloads)
+static void calc_range_weights(RangeWeight *rweights, Laik_RangeList *lr, double *timearr, int dims)
 {
+    Laik_Instance *inst = lr->space->inst;
+    laik_svg_profiler_enter(inst, __func__);
+
     if (dims == 1)
     {
         for (size_t i = 0; i < lr->count; ++i)
@@ -111,6 +126,8 @@ void calc_range_weights(RangeWeight *rweights, Laik_RangeList *lr, double *timea
             laik_log(1, "[grw] task %d, i %ld, range [%ld,%ld] -> (%ld,%ld), rcount_x: %ld, r_count_y: %ld, weight %f\n", rtask, i, rweights[i].range.from.i[0], rweights[i].range.from.i[1], rweights[i].range.to.i[0], rweights[i].range.to.i[1], rcount_x, rcount_y, rweights[i].weight);
         }
     }
+
+    laik_svg_profiler_exit(inst, __func__);
 }
 
 // internal 1d rcb helper function; [fromTask - toTask)
@@ -119,6 +136,9 @@ void calc_range_weights(RangeWeight *rweights, Laik_RangeList *lr, double *timea
 //       partially due to recursion, mainly due to differences in the algorithm to avoid cluttering the function with ifs
 static void rcb_1d(Laik_RangeReceiver *r, RangeWeight *rweights, unsigned rwcount, Laik_Range *range, int fromTask, int toTask)
 {
+    Laik_Instance *inst = r->params->space->inst;
+    laik_svg_profiler_enter(inst, __func__);
+
     int64_t from = range->from.i[0];
     int64_t to = range->to.i[0];
 
@@ -127,6 +147,7 @@ static void rcb_1d(Laik_RangeReceiver *r, RangeWeight *rweights, unsigned rwcoun
     if (count == 1 || from > to)
     {
         laik_append_range(r, fromTask, range, 0, 0);
+        laik_svg_profiler_exit(inst, __func__);
         return;
     }
 
@@ -164,6 +185,7 @@ static void rcb_1d(Laik_RangeReceiver *r, RangeWeight *rweights, unsigned rwcoun
     r2.from.i[0] = split;
     rcb_1d(r, rweights, rwcount, &r1, fromTask, tmid);
     rcb_1d(r, rweights, rwcount, &r2, tmid + 1, toTask);
+    laik_svg_profiler_exit(inst, __func__);
 }
 
 // internal 2d rcb helper function; [fromTask - toTask)
@@ -171,6 +193,9 @@ static void rcb_1d(Laik_RangeReceiver *r, RangeWeight *rweights, unsigned rwcoun
 // primary changes are determining the split direction by checking which side is longest and how the weights are computed / accumulated
 static void rcb_2d(Laik_RangeReceiver *r, RangeWeight *rweights, unsigned rwcount, Laik_Range *range, int fromTask, int toTask)
 {
+    Laik_Instance *inst = r->params->space->inst;
+    laik_svg_profiler_enter(inst, __func__);
+
     int64_t from_x = range->from.i[0];
     int64_t from_y = range->from.i[1];
     int64_t to_x = range->to.i[0];
@@ -181,6 +206,7 @@ static void rcb_2d(Laik_RangeReceiver *r, RangeWeight *rweights, unsigned rwcoun
     if (count == 1)
     {
         laik_append_range(r, fromTask, range, 0, 0);
+        laik_svg_profiler_exit(inst, __func__);
         return;
     }
 
@@ -195,6 +221,7 @@ static void rcb_2d(Laik_RangeReceiver *r, RangeWeight *rweights, unsigned rwcoun
     if (width == 1)
     {
         laik_append_range(r, fromTask, range, 0, 0);
+        laik_svg_profiler_exit(inst, __func__);
         return;
     }
 
@@ -274,10 +301,14 @@ static void rcb_2d(Laik_RangeReceiver *r, RangeWeight *rweights, unsigned rwcoun
     laik_log(1, "[rcb2d] split_x: %ld, split_y : %ld, r1: [%ld, %ld] -> (%ld, %ld); r2: [%ld, %ld] -> (%ld, %ld)\n", split_x, split_y, r1.from.i[0], r1.from.i[1], r1.to.i[0], r1.to.i[1], r2.from.i[0], r2.from.i[1], r2.to.i[0], r2.to.i[1]);
     rcb_2d(r, rweights, rwcount, &r1, fromTask, tmid);
     rcb_2d(r, rweights, rwcount, &r2, tmid + 1, toTask);
+    laik_svg_profiler_exit(inst, __func__);
 }
 
 void runRCBPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams *p)
 {
+    Laik_Instance *inst = p->space->inst;
+    laik_svg_profiler_enter(inst, __func__);
+
     RCBData *rcbd = (RCBData *)p->partitioner->data;
     assert(rcbd);
 
@@ -293,6 +324,8 @@ void runRCBPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams *p)
         rcb_1d(r, rweights, rwcount, &range, 0, tidcount - 1);
     else if (dims == 2)
         rcb_2d(r, rweights, rwcount, &range, 0, tidcount - 1);
+
+    laik_svg_profiler_exit(inst, __func__);
 }
 
 Laik_Partitioner *laik_new_rcb_partitioner(RangeWeight *rweights, unsigned count, unsigned tidcount, int dims)
@@ -318,16 +351,19 @@ int laik_lb_measure(Laik_Group *group, double *timearr)
 {
     static double time = 0;
 
+    Laik_Instance *inst = group->inst;
+    laik_svg_profiler_enter(inst, __func__);
+
     // on first call, just record time and exit function
     if (time == 0)
     {
         if (laik_myid(group) == 0)
             printf("[LB] first lb call, registering start time...\n");
         time = laik_wtime();
+
+        laik_svg_profiler_exit(inst, __func__);
         return 1;
     }
-
-    Laik_Instance *inst = group->inst;
     int gsize = laik_size(group);
     int task = laik_myid(group);
     memset(timearr, 0, sizeof(double) * gsize);
@@ -356,11 +392,16 @@ int laik_lb_measure(Laik_Group *group, double *timearr)
 
     // update time for next balancing call
     time = laik_wtime();
+
+    laik_svg_profiler_exit(inst, __func__);
     return 0;
 }
 
 Laik_Partitioning *laik_lb_balance(Laik_Partitioning *partitioning /*, Laik_Partitioner *algorithm, double threshold*/)
 {
+    Laik_Instance *inst = partitioning->group->inst;
+    laik_svg_profiler_enter(inst, __func__);
+
     Laik_Space *space = partitioning->space;
     Laik_Group *group = partitioning->group;
     int task = laik_myid(group);
@@ -372,7 +413,11 @@ Laik_Partitioning *laik_lb_balance(Laik_Partitioning *partitioning /*, Laik_Part
 
     // if the balancing function is called for the first time, return the partitioning unchanged
     if (laik_lb_measure(group, timearr))
+    {
+        // might not even be visible?
+        laik_svg_profiler_exit(inst, __func__);
         return partitioning;
+    }
 
     // otherwise, continue with the balancing algorithm...
     double maxdiff = min_max_difference(timearr, gsize);
@@ -386,5 +431,8 @@ Laik_Partitioning *laik_lb_balance(Laik_Partitioning *partitioning /*, Laik_Part
 
     // use task weights to create new partitioning using RCB
     Laik_Partitioner *nparter = laik_new_rcb_partitioner(rweights, lr->count, gsize, dims);
-    return laik_new_partitioning(nparter, group, space, partitioning);
+    Laik_Partitioning *npart = laik_new_partitioning(nparter, group, space, partitioning);
+
+    laik_svg_profiler_exit(inst, __func__);
+    return npart;
 }

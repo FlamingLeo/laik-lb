@@ -15,12 +15,24 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-
 #ifndef LAIK_PROFILING_INTERNAL
 #define LAIK_PROFILING_INTERNAL
 
-#include <stdbool.h>      // for bool
-#include "definitions.h"  // for MAX_FILENAME_LENGTH
+#include <stdbool.h>     // for bool
+#include "definitions.h" // for MAX_FILENAME_LENGTH
+
+struct _Laik_Profiling_Event
+{
+    char *name;
+    double start, end;
+    int depth;
+};
+
+struct _Laik_Profiling_EventList
+{
+    struct _Laik_Profiling_Event ev;
+    struct _Laik_Profiling_EventList *next;
+};
 
 struct _Laik_Profiling_Controller
 {
@@ -33,7 +45,11 @@ struct _Laik_Profiling_Controller
 
     char filename[MAX_FILENAME_LENGTH];
     // to avoid including <stdio.h> here: use void* instead of FILE*
-    void* profile_file;
+    void *profile_file;
+
+    // svg visualization information
+    struct _Laik_Profiling_EventList *head;
+    int depth;
 };
 
 #endif // LAIK_PROFILING_INTERNAL

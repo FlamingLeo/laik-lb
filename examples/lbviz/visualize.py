@@ -1,3 +1,5 @@
+# NOTE: this script is intended to be called from inside the C program!
+#       file path resolution may fail otherwise if not called from the proper directory
 import ast
 import matplotlib.pyplot as plt
 import numpy as np

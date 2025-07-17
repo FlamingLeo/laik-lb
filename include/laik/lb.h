@@ -22,20 +22,6 @@ typedef struct RCBData
     int dims;
 } RCBData;
 
-// get range weight from index inside of range, 0 else
-//
-// note 1: i was considering making the 1d and 2d versions a single function, but given that it's called in a loop,
-//         checking the dimensions every single time (e.g. if(dims == 1) ... else ...) would be inefficient
-// note 2: one could also create a new space containing only the associated weights, which would make lookup O(1),
-//         but would also blow up the amount of memory used
-double get_range_weight_from_index_1d(RangeWeight *rweights, unsigned rwcount, int idx);
-double get_range_weight_from_index_2d(RangeWeight *rweights, unsigned rwcount, int x, int y);
-
-// calculate range weights, assuming one contiguous range per task
-//
-// TODO: non-contiguous ranges (i.e. multiple ranges per task with different workloads)
-void calc_range_weights(RangeWeight *rweights, Laik_RangeList *lr, double *timearr, int dims);
-
 // main rcb function
 void runRCBPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams *p);
 

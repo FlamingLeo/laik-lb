@@ -1,3 +1,5 @@
 plots/
 *.png
+*.svg
 *.txt
+*.json

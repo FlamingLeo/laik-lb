@@ -21,6 +21,7 @@
 #include <time.h>
 #include <sys/time.h>
 #include <stdarg.h>
+#include <string.h>
 
 /**
  * Application controlled profiling
@@ -75,6 +76,18 @@
 static Laik_Instance* laik_profinst = 0;
 extern char* __progname;
 
+// helper: free svg visualization state event list
+static void free_event_list(Laik_Instance* i)
+{
+    Laik_Profiling_EventList *cur = i->profiling->head;
+    while (cur) {
+        Laik_Profiling_EventList *next = cur->next;
+        free(cur->ev.name);
+        free(cur);
+        cur = next;
+    }
+}
+
 // called by laik_init
 Laik_Profiling_Controller* laik_init_profiling(void)
 {
@@ -84,7 +97,7 @@ Laik_Profiling_Controller* laik_init_profiling(void)
     return ctrl;
 }
 
-//Time Measurement Funcitonality
+// time measurement functionality
 double laik_realtime(){
     struct timeval tv;
     gettimeofday(&tv, 0);
@@ -103,9 +116,12 @@ double laik_wtime()
 }
 
 // called by laik_finalize
-// FIXME: should close any open file if output-to-file is enabled
 void laik_free_profiling(Laik_Instance* i)
 {
+    free_event_list(i);
+    if(i->profiling->profile_file) {
+        fclose(i->profiling->profile_file);
+    }
     free(i->profiling);
 }
 
@@ -115,6 +131,7 @@ void laik_enable_profiling(Laik_Instance* i)
 {
     if (laik_profinst) {
         if (laik_profinst == i) return;
+        free_event_list(laik_profinst);
         laik_profinst->profiling->do_profiling = false;
     }
     laik_profinst = i;
@@ -124,9 +141,11 @@ void laik_enable_profiling(Laik_Instance* i)
     i->profiling->time_backend = 0.0;
     i->profiling->time_total = 0.0;
     i->profiling->time_user = 0.0;
+    i->profiling->head = NULL;
+    i->profiling->depth = 0;
 }
 
-// reset measured time spans
+// reset measured time spans and invalidate previous svg visualization event list
 void laik_reset_profiling(Laik_Instance* i)
 {
     if (laik_profinst) {
@@ -136,6 +155,9 @@ void laik_reset_profiling(Laik_Instance* i)
                 i->profiling->time_backend = 0.0;
                 i->profiling->time_total = 0.0;
                 i->profiling->time_user = 0.0;
+                free_event_list(i);
+                i->profiling->head = NULL;
+                i->profiling->depth = 0;
             }
         }
     }
@@ -186,6 +208,7 @@ void laik_enable_profiling_file(Laik_Instance* i, const char* filename)
     i->profiling->time_backend = 0.0;
     i->profiling->time_total = 0.0;
     snprintf(i->profiling->filename, MAX_FILENAME_LENGTH, "t%s.%s", i->guid, filename);
+    
     i->profiling->profile_file = fopen(filename, "a+");
     if (i->profiling->profile_file == NULL) {
         laik_log(LAIK_LL_Error, "Unable to start file based profiling");
@@ -239,8 +262,10 @@ void laik_writeout_profile()
 void laik_close_profiling_file(Laik_Instance* i)
 {
     if (i->profiling->profile_file != NULL) {
-        fprintf((FILE*)i->profiling->profile_file, "======MEASUREMENT END AT: %lu======\n",
-                (unsigned long) time(NULL));
+        if(!i->profiling->head) // assume that if there is no event list, we probably wrote a text file, not a json for svg viz.
+                                // can be made more explicit using a flag
+            fprintf((FILE*)i->profiling->profile_file, "======MEASUREMENT END AT: %lu======\n",
+                    (unsigned long) time(NULL));
         fclose(i->profiling->profile_file);
         i->profiling->profile_file = NULL;
     }
@@ -257,3 +282,99 @@ void laik_profile_printf(const char* msg, ...)
     }
 }
 
+///////////////////////
+// svg visualization //
+///////////////////////
+
+// enable output-to-file mode for svg visualization
+void laik_svg_enable_profiling(Laik_Instance* i, const char* filename)
+{
+    if (laik_profinst) {
+        if (laik_profinst == i) return;
+        free_event_list(laik_profinst);
+        laik_profinst->profiling->do_profiling = false;
+    }
+    laik_profinst = i;
+    if (!i) return;
+
+    i->profiling->do_profiling = true;
+    i->profiling->time_backend = 0.0;
+    i->profiling->time_total = 0.0;
+    i->profiling->time_user = 0.0;
+    i->profiling->head = NULL;
+    i->profiling->depth = 0;
+
+    i->profiling->profile_file = fopen(filename, "w");
+    if (i->profiling->profile_file == NULL) {
+        laik_log(LAIK_LL_Error, "Unable to start svg-visualization profiling");
+    }
+}
+
+// enter new function
+// call this (ideally) right before / at the start of the function to profile
+void laik_svg_profiler_enter(Laik_Instance* i, const char *func_name)
+{
+    if (laik_profinst) {
+        if (laik_profinst == i) {
+            if (i->profiling->do_profiling) {
+                // push one level deeper
+                i->profiling->depth++;
+
+                // we record the start time in a temporary stack by 
+                // allocating a node and storing only start+name+depth for now
+                Laik_Profiling_EventList *node = malloc(sizeof *node);
+                node->ev.name                  = strdup(func_name);
+                node->ev.start                 = laik_wtime();
+                node->ev.end                   = -1.0;
+                node->ev.depth                 = i->profiling->depth;
+                node->next                     = i->profiling->head;
+                i->profiling->head             = node;
+            }
+        }
+    }
+}
+
+// exit function
+// call this (ideally) right after / at the end of the function to profile
+void laik_svg_profiler_exit(Laik_Instance* i, const char *func_name)
+{
+    if (laik_profinst) {
+        if (laik_profinst == i) {
+            if (i->profiling->do_profiling) {
+                double finish = laik_wtime();
+
+                // find the most recent incomplete event matching this name + depth combo
+                for (Laik_Profiling_EventList *n = i->profiling->head; n; n = n->next) {
+                    if (n->ev.end < 0 
+                        && n->ev.depth == i->profiling->depth 
+                        && strcmp(n->ev.name, func_name) == 0) {
+                        n->ev.end = finish;
+                        break;
+                    }
+                }
+
+                // pop one level
+                i->profiling->depth--;
+            }
+        }
+    }
+}
+
+// export current profiler event state to json-formatted file
+void laik_svg_profiler_export_json(Laik_Instance* i)
+{
+    FILE* out = (FILE*) i->profiling->profile_file;
+
+    fprintf(out, "[\n");
+    bool first = true;
+    for (Laik_Profiling_EventList *n = i->profiling->head; n; n = n->next) {
+        // skip any that never got closed
+        if (n->ev.end < 0) continue;
+        if (!first) fprintf(out, ",\n");
+        first = false;
+        fprintf(out,
+          "  { \"name\": \"%s\", \"start\": %.6f, \"end\": %.6f, \"track\": %d }",
+          n->ev.name, n->ev.start, n->ev.end, laik_myid(i->world));
+    }
+    fprintf(out, "\n]\n");
+}

@@ -29,7 +29,7 @@
 #include <math.h>
 
 #define CLI_OPTS 0
-#define PROFILING 0
+#define PROFILING 1
 #define RESERVATION 0
 #define ACTIONS 0 // should also enable RESERVATION
 #define SUM 1
@@ -37,11 +37,11 @@
 #define SIZE 2500
 #define MAXITER 100
 #define RES_ITER 10
-#define WL_LB_ITER 5
+#define WL_LB_ITER 3
 
 // NEW (task visualization) ####################################
 #define FILENAME "lbviz/array_data.txt"
-#define DO_VISUALIZATION
+// #define DO_VISUALIZATION
 
 #ifdef DO_VISUALIZATION
 #define EXPORT_TO_FILE(_id, _part)                              \
@@ -95,6 +95,16 @@ static void export_to_file(Laik_RangeList *lr)
 static void visualize()
 {
     system("python3 lbviz/visualize.py");
+}
+
+static void remove_plots()
+{
+    system("../scripts/remove_plots.sh");
+}
+
+static void save_trace()
+{
+    system("python3 lbviz/trace.py");
 }
 // ######################################################### NEW
 
@@ -190,6 +200,7 @@ void setBoundary(int size, Laik_Partitioning *pWrite, Laik_Data *dWrite)
 
 int main(int argc, char *argv[])
 {
+    remove_plots();
     Laik_Instance *inst = laik_init(&argc, &argv);
     Laik_Group *world = laik_world(inst);
 
@@ -204,6 +215,7 @@ int main(int argc, char *argv[])
     bool do_actions = ACTIONS;
 
     int arg = 1;
+    int myid = laik_myid(world);
 #if CLI_OPTS
     while ((argc > arg) && (argv[arg][0] == '-'))
     {
@@ -249,7 +261,7 @@ int main(int argc, char *argv[])
     if (maxiter == 0)
         maxiter = MAXITER;
 
-    if (laik_myid(world) == 0)
+    if (myid == 0)
     {
         printf("%d x %d cells (mem %.1f MB), running %d iterations with %d tasks",
                size, size, .000016 * size * size, maxiter, laik_size(world));
@@ -263,7 +275,11 @@ int main(int argc, char *argv[])
 #if PROFILING
     // start profiling interface
     if (do_profiling)
-        laik_enable_profiling_file(inst, "jac2d_profiling.txt");
+    {
+        char filename[MAX_FILENAME_LENGTH];
+        sprintf(filename, "lbviz/jac2d-lb-%d.json", myid);
+        laik_svg_enable_profiling(inst, filename);
+    }
 #endif
 
     double *baseR, *baseW, *sumPtr;
@@ -387,6 +403,9 @@ int main(int argc, char *argv[])
     double _t, _t1 = laik_wtime(), _t2 = _t1;
     int _last_iter = 0;
     int _res_iters = 0; // iterations done with residuum calculation
+
+    if (do_profiling)
+        laik_svg_profiler_enter(inst, __func__);
 
     // NEW #################
     laik_lb_balance(pWrite);
@@ -614,9 +633,19 @@ int main(int argc, char *argv[])
         }
     }
 
-    EXPORT_TO_FILE(laik_myid(world), pWrite);
-    VISUALIZE(laik_myid(world));
+    EXPORT_TO_FILE(myid, pWrite);
+    VISUALIZE(myid);
+    
+    if (do_profiling)
+    {
+        laik_svg_profiler_exit(inst, __func__);
+        laik_svg_profiler_export_json(inst);
+    }
 
     laik_finalize(inst);
+    if (do_profiling && myid == 0)
+    {
+        save_trace();
+    }
     return 0;
 }
