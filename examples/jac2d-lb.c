@@ -16,6 +16,8 @@
 
 /**
  * 2d Jacobi example (with load balancing).
+ * 
+ * TODO: make this example work with sfc load balancing algorithms
  */
 
 #include <laik.h>
@@ -109,7 +111,6 @@ static void save_trace()
 // ######################################################### NEW
 
 // NEW (workload) ##############################################
-#define MAX_EXTRA 2000 // maximum extra cost of workload
 #define WORKLOAD
 
 #ifdef WORKLOAD
@@ -133,7 +134,7 @@ static void save_trace()
     /* npRead: pointer to new read partition based on new write partition borders */ \
     if ((_iter == 0) || (iter < _iter))                                              \
     {                                                                                \
-        if ((npWrite = laik_lb_balance(pWrite)) == pWrite)                           \
+        if ((npWrite = laik_lb_balance(STOP_LB_SEGMENT, pWrite, LB_RCB)) == pWrite)  \
             continue;                                                                \
                                                                                      \
         npRead = laik_new_partitioning(prRead, world, space, npWrite);               \
@@ -407,10 +408,6 @@ int main(int argc, char *argv[])
     if (do_profiling)
         laik_svg_profiler_enter(inst, __func__);
 
-    // NEW #################
-    laik_lb_balance(pWrite);
-    // ################# NEW
-
     int iter = 0;
     for (; iter < maxiter; iter++)
     {
@@ -515,6 +512,9 @@ int main(int argc, char *argv[])
         // check for residuum every RES_ITER iterations
         if (((iter % RES_ITER) == 0) && (iter >= RES_ITER))
         {
+            // NEW ###################################
+            laik_lb_balance(START_LB_SEGMENT, 0, 0);
+            // ################################### NEW
 
             double newValue, diff, res;
             res = 0.0;
@@ -575,6 +575,10 @@ int main(int argc, char *argv[])
         }
         else
         {
+            // NEW ###################################
+            laik_lb_balance(START_LB_SEGMENT, 0, 0);
+            // ################################### NEW
+
             double newValue;
             for (int64_t y = y1; y < y2; y++)
             {
@@ -635,7 +639,7 @@ int main(int argc, char *argv[])
 
     EXPORT_TO_FILE(myid, pWrite);
     VISUALIZE(myid);
-    
+
     if (do_profiling)
     {
         laik_svg_profiler_exit(inst, __func__);

@@ -98,6 +98,7 @@ int main_1d(int argc, char *argv[], int64_t spsize, int lcount)
     Laik_Partitioner *parter = laik_new_block_partitioner1();
     Laik_Partitioning *part = laik_new_partitioning(parter, world, space, 0);
     laik_switchto_partitioning(data, part, LAIK_DF_None, LAIK_RO_None);
+    Laik_LBAlgorithm lbalg = LB_RCB;
 
     int iterations = (id + 1) * 10;
 
@@ -106,15 +107,13 @@ int main_1d(int argc, char *argv[], int64_t spsize, int lcount)
     laik_my_range_1d(part, 0, &from, &to);
     laik_log(2, "[main1d] init. range [%ld, %ld) count %ld; performing %d iterations \n", from, to, to - from, iterations);
 
-    // get initial time
-    laik_lb_balance(part);
-
     // run the example lcount times to test load balancing (and stopping threshold)
     // maybe use laik's iteration functionality somewhere here?
     for (int i = 0; i < lcount; ++i)
     {
         // each task runs for a fixed task-specific number of iterations
         // for simplicity: 1 item == 1 microsecond
+        laik_lb_balance(START_LB_SEGMENT, 0, 0);
         for (int j = 0; j < iterations; ++j)
         {
             uint64_t count;
@@ -124,8 +123,9 @@ int main_1d(int argc, char *argv[], int64_t spsize, int lcount)
         }
 
         // calculate and switch to new partitioning determined by load balancing algorithm
-        Laik_Partitioning *newpart = laik_lb_balance(part);
-        if(part == newpart) continue;
+        Laik_Partitioning *newpart = laik_lb_balance(STOP_LB_SEGMENT, part, lbalg);
+        if (part == newpart)
+            continue;
 
         laik_my_range_1d(newpart, 0, &from, &to);
         laik_log(2, "[main1d] new range [%ld, %ld) count %ld\n", from, to, to - from);
@@ -148,7 +148,7 @@ int main_1d(int argc, char *argv[], int64_t spsize, int lcount)
 int main_2d(int argc, char *argv[], int64_t spsize, int lcount)
 {
     // initialization
-    int64_t size = (int64_t)sqrt(spsize);
+    int64_t sdsize = (int64_t)sqrt(spsize);
     Laik_Instance *inst = laik_init(&argc, &argv);
     Laik_Group *world = laik_world(inst);
     int id = laik_myid(world);
@@ -156,46 +156,46 @@ int main_2d(int argc, char *argv[], int64_t spsize, int lcount)
     if (id == 0)
     {
         printf("Running 2D example with %d iterations.\n", lcount);
-        printf("Side size %ld; Space size %ldx%ld.\n", spsize, size, size);
+        printf("Space size %ld = %ldx%ld.\n", spsize, sdsize, sdsize);
     }
 
-    Laik_Space *space = laik_new_space_2d(inst, size, size);
+    Laik_Space *space = laik_new_space_2d(inst, sdsize, sdsize);
     Laik_Data *data = laik_new_data(space, laik_Int32);
     Laik_Partitioner *parter = laik_new_bisection_partitioner();
     Laik_Partitioning *part = laik_new_partitioning(parter, world, space, 0);
     laik_switchto_partitioning(data, part, LAIK_DF_None, LAIK_RO_None);
+    Laik_LBAlgorithm lbalg = LB_MORTON;
 
     int iterations = (id + 1) * 10;
+    double c = 0.5; // sleep time constant multiplier
 
     // debug logging
     int64_t from_x, from_y, to_x, to_y;
     laik_my_range_2d(part, 0, &from_x, &to_x, &from_y, &to_y);
     int64_t count_x = to_x - from_x;
     int64_t count_y = to_y - from_y;
-    laik_log(2, "[main2d] init. range [%ld,%ld] -> (%ld,%ld) count (x: %ld, y: %ld); performing %d iterations \n", from_x, from_y, to_x, to_y, count_x, count_y, iterations);
-
-    // get initial time
-    laik_lb_balance(part);
 
     // modified version of the 1d example, to be changed to something more "professional" later (e.g. n-body)
     for (int loop = 0; loop < lcount; ++loop)
     {
+        laik_log(1, "%d ranges\n", laik_my_rangecount(part));
+        laik_lb_balance(START_LB_SEGMENT, 0, 0);
         for (int iter = 0; iter < iterations; ++iter)
         {
-            uint64_t count_x, count_y;
-            laik_get_map_2d(data, 0, NULL, &count_y, NULL, &count_x);
-            uint64_t sleepdur = count_x * count_y;
-            usleep(sleepdur);
+            uint64_t sleepdur = 0;
+            for (int r = 0; r < laik_my_rangecount(part); ++r)
+            {
+                int64_t from_x, from_y, to_x, to_y;
+                laik_my_range_2d(part, r, &from_x, &to_x, &from_y, &to_y);
+                sleepdur += (to_x - from_x) * (to_y - from_y);
+            }
+            usleep((uint64_t)((double)sleepdur * c));
         }
 
         // calculate and switch to new partitioning determined by load balancing algorithm
-        Laik_Partitioning *newpart = laik_lb_balance(part);
-        if (part == newpart) continue;
-
-        laik_my_range_2d(newpart, 0, &from_x, &to_x, &from_y, &to_y);
-        count_x = to_x - from_x;
-        count_y = to_y - from_y;
-        laik_log(2, "[main2d] new range [%ld,%ld] -> (%ld,%ld) count (x: %ld, y: %ld)\n", from_x, from_y, to_x, to_y, count_x, count_y);
+        Laik_Partitioning *newpart = laik_lb_balance(STOP_LB_SEGMENT, part, lbalg);
+        if (part == newpart)
+            continue;
 
         laik_switchto_partitioning(data, newpart, LAIK_DF_None, LAIK_RO_None);
 
@@ -215,7 +215,7 @@ int main_2d(int argc, char *argv[], int64_t spsize, int lcount)
 // choose example and parameters based on input
 //
 // USAGE: <mpirun -n x> ./lb [example] <spacesize> <loopcount>
-//   e.g: mpirun -n 4 ./lb 1 250000 10 
+//   e.g: mpirun -n 4 ./lb 1 250000 10
 int main(int argc, char *argv[])
 {
     // example must be specified
@@ -228,8 +228,8 @@ int main(int argc, char *argv[])
         exit(1);
 
     // optional space size and loop count arguments
-    int64_t spsize = 250000; // space size
-    int lcount = 10;         // loop count
+    int64_t spsize = 1024 * 1024; // space size
+    int lcount = 5;               // loop count
     if (argc > 2)
         spsize = atoi(argv[2]);
     if (argc > 3)
@@ -240,10 +240,3 @@ int main(int argc, char *argv[])
     else if (example == 2)
         main_2d(argc, argv, spsize, lcount);
 }
-
-/*
-TODOs:
-- browser trace (profiling?)
-- incremental partitioner
-- hpc
-*/
