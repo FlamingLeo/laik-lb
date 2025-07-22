@@ -25,10 +25,16 @@ typedef enum {
 // sfc partitioners //
 //////////////////////
 
-// main morton (z-curve) function
+// main hilbert curve function
+void runHilbertPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams *p);
+
+// create new hilbert curve partitioner
+Laik_Partitioner *laik_new_hilbert_partitioner(double *tweights);
+
+// main morton curve (z-curve) function
 void runMortonPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams *p);
 
-// create new morton partitioner
+// create new morton curve partitioner
 Laik_Partitioner *laik_new_morton_partitioner(double *tweights);
 
 /////////////////////

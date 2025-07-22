@@ -164,7 +164,7 @@ int main_2d(int argc, char *argv[], int64_t spsize, int lcount)
     Laik_Partitioner *parter = laik_new_bisection_partitioner();
     Laik_Partitioning *part = laik_new_partitioning(parter, world, space, 0);
     laik_switchto_partitioning(data, part, LAIK_DF_None, LAIK_RO_None);
-    Laik_LBAlgorithm lbalg = LB_MORTON;
+    Laik_LBAlgorithm lbalg = LB_HILBERT;
 
     int iterations = (id + 1) * 10;
     double c = 0.5; // sleep time constant multiplier
@@ -228,8 +228,9 @@ int main(int argc, char *argv[])
         exit(1);
 
     // optional space size and loop count arguments
-    int64_t spsize = 1024 * 1024; // space size
-    int lcount = 5;               // loop count
+    int64_t sidelen = 1024;
+    int64_t spsize = sidelen * sidelen; // space size (sidelen^2)
+    int lcount = 5;                     // loop count
     if (argc > 2)
         spsize = atoi(argv[2]);
     if (argc > 3)
