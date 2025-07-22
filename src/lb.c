@@ -11,6 +11,35 @@
 // helper functions //
 //////////////////////
 
+// difference between the minimum and maximum of the times taken by each task
+static double min_max_difference(double *weights, int64_t size, int gsize)
+{
+    assert(size > 0);
+    double max = weights[size];
+    double min = weights[size];
+    for (int64_t i = size + 1; i < size + gsize; i++)
+    {
+        if (weights[i] > max)
+            max = weights[i];
+        if (weights[i] < min)
+            min = weights[i];
+    }
+    return max - min;
+}
+
+// print times (elements in weight array starting at offset size) since last rebalance
+static void print_times(double *weights, int64_t size, int gsize)
+{
+    printf("[LB] times in s since last rebalance: [");
+    for (int64_t i = size; i < size + gsize; ++i)
+    {
+        printf("%.2f", weights[i]);
+        if (i < size + gsize - 1)
+            printf(", ");
+    }
+    printf("], max dt: %.2f\n", min_max_difference(weights, size, gsize));
+}
+
 // check if a number is a power of 2
 static bool is_power_of_two(int64_t x)
 {
@@ -49,36 +78,40 @@ static double get_idx_weight_2d(double *weights, int64_t size_x, int64_t x, int6
 // merging cells //
 ///////////////////
 
-// local helper structs for merging 2D blocks
+/* local helper structs for merging 2D blocks */
+// a single 2d point defined by its coordinates
 typedef struct
 {
     uint32_t x, y;
-} Point;
+} LBPoint;
 
+// a 2d rectangle defined by its corner points (one could also use two point structs here, but this seems easier to work with)
 typedef struct
 {
     uint32_t x1, x2, y1, y2;
-} Rect;
+} LBRect;
 
+// a horizontal run along a row (same y-axis)
+// defined by the row we're on and the start and end x coordinates
 typedef struct
 {
     uint32_t y, x1, x2;
-} Run;
+} LBHorizontalRun;
 
-// comparators for each scenario (points, runs, rectangles)
+/* comparators for each scenario (points, runs, rectangles) */
+// (y, x)
 static int cmp_pt(const void *a, const void *b)
 {
-    // (y, x)
-    const Point *p = a, *q = b;
+    const LBPoint *p = a, *q = b;
     if (p->y != q->y)
         return (p->y < q->y ? -1 : 1);
     return (p->x < q->x ? -1 : p->x > q->x);
 }
 
+// (y, x1, x2)
 static int cmp_run(const void *a, const void *b)
 {
-    // (y, x1, x2)
-    const Run *r = a, *s = b;
+    const LBHorizontalRun *r = a, *s = b;
     if (r->y != s->y)
         return (r->y < s->y ? -1 : 1);
     if (r->x1 != s->x1)
@@ -86,10 +119,10 @@ static int cmp_run(const void *a, const void *b)
     return (r->x2 < s->x2 ? -1 : r->x2 > s->x2);
 }
 
+// (x1, x2)
 static int cmp_rect(const void *a, const void *b)
 {
-    // (x1, x2)
-    const Rect *r = a, *s = b;
+    const LBRect *r = a, *s = b;
     if (r->x1 != s->x1)
         return (r->x1 < s->x1 ? -1 : 1);
     if (r->x2 != s->x2)
@@ -106,7 +139,7 @@ static int cmp_rect(const void *a, const void *b)
 // the other way would be some sort of bounding-box algorithm over each region, which might be simpler, but sacrifices some precision
 //
 // this approach is still not perfect, running in O(n log n) due to sorts and some possibly overcomplicated logic towards the end
-static void merge_cells_into_rects(const Point *cells, size_t n, Rect **out_rects, size_t *out_count)
+static void merge_cells_into_rects(const LBPoint *cells, size_t n, LBRect **out_rects, size_t *out_count)
 {
     if (n == 0)
     {
@@ -116,12 +149,12 @@ static void merge_cells_into_rects(const Point *cells, size_t n, Rect **out_rect
     }
 
     // 1. sort points by (y,x)
-    Point *pts = (Point *)safe_malloc(n * sizeof(Point));
-    memcpy(pts, cells, n * sizeof(Point));
-    qsort(pts, n, sizeof(Point), cmp_pt);
+    LBPoint *pts = (LBPoint *)safe_malloc(n * sizeof(LBPoint));
+    memcpy(pts, cells, n * sizeof(LBPoint));
+    qsort(pts, n, sizeof(LBPoint), cmp_pt);
 
     // 2. build horizontal runs
-    Run *runs = (Run *)safe_malloc(n * sizeof(Run));
+    LBHorizontalRun *runs = (LBHorizontalRun *)safe_malloc(n * sizeof(LBHorizontalRun));
     size_t nruns = 0;
 
     uint32_t run_y = pts[0].y;
@@ -136,7 +169,7 @@ static void merge_cells_into_rects(const Point *cells, size_t n, Rect **out_rect
         if (pts[i].y != run_y || pts[i].x != prev_x + 1)
         {
             // end previous run
-            runs[nruns++] = (Run){run_y, run_x0, prev_x + 1};
+            runs[nruns++] = (LBHorizontalRun){run_y, run_x0, prev_x + 1};
 
             // start a new run
             run_y = pts[i].y;
@@ -146,16 +179,16 @@ static void merge_cells_into_rects(const Point *cells, size_t n, Rect **out_rect
     }
 
     // finish the last run and free point buffer
-    runs[nruns++] = (Run){run_y, run_x0, prev_x + 1};
+    runs[nruns++] = (LBHorizontalRun){run_y, run_x0, prev_x + 1};
     free(pts);
 
     // 3. sort runs by (y,x1,x2)
-    qsort(runs, nruns, sizeof(Run), cmp_run);
+    qsort(runs, nruns, sizeof(LBHorizontalRun), cmp_run);
 
     // prepare active‐rect and output arrays for vertical stitching
-    Rect *active = (Rect *)safe_malloc(nruns * sizeof(Rect));      // set of rectangles to extend downwards
-    Rect *next_active = (Rect *)safe_malloc(nruns * sizeof(Rect)); // temp. buffer for next row's active set
-    Rect *output = (Rect *)safe_malloc(nruns * sizeof(Rect));      // accumulates finished rectangles
+    LBRect *active = (LBRect *)safe_malloc(nruns * sizeof(LBRect));      // set of rectangles to extend downwards
+    LBRect *next_active = (LBRect *)safe_malloc(nruns * sizeof(LBRect)); // temp. buffer for next row's active set
+    LBRect *output = (LBRect *)safe_malloc(nruns * sizeof(LBRect));      // accumulates finished rectangles
     size_t act_cnt = 0;
     size_t out_cnt = 0;
 
@@ -172,7 +205,7 @@ static void merge_cells_into_rects(const Point *cells, size_t n, Rect **out_rect
         size_t end_i = i;
 
         // sort active rects by (x1,x2) each row
-        qsort(active, act_cnt, sizeof(Rect), cmp_rect);
+        qsort(active, act_cnt, sizeof(LBRect), cmp_rect);
 
         // pointers into runs[start_i..end_i) and active[0..act_cnt)
         size_t r = start_i;
@@ -204,7 +237,7 @@ static void merge_cells_into_rects(const Point *cells, size_t n, Rect **out_rect
             else
             {
                 // go to new run at this row
-                next_active[na++] = (Rect){rx1, rx2, y, y + 1};
+                next_active[na++] = (LBRect){rx1, rx2, y, y + 1};
                 ++r;
             }
         }
@@ -215,10 +248,10 @@ static void merge_cells_into_rects(const Point *cells, size_t n, Rect **out_rect
 
         // leftover runs -> new rects
         while (r < end_i)
-            next_active[na++] = (Rect){runs[r].x1, runs[r].x2, y, y + 1}, ++r;
+            next_active[na++] = (LBRect){runs[r].x1, runs[r].x2, y, y + 1}, ++r;
 
         // swap active & next_active
-        memcpy(active, next_active, na * sizeof(Rect));
+        memcpy(active, next_active, na * sizeof(LBRect));
         act_cnt = na;
     }
 
@@ -337,7 +370,7 @@ void runMortonPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams *p)
 
     // dynamic array for the current task's cells
     size_t cells_cap = 1024, cells_cnt = 0;
-    Point *cells = (Point *)safe_malloc(cells_cap * sizeof *cells);
+    LBPoint *cells = (LBPoint *)safe_malloc(cells_cap * sizeof *cells);
 
     laik_log(1, "size %ld, totalw %f, targetw %f for %d procs\n", N, total_w, target, tidcount);
 
@@ -354,12 +387,12 @@ void runMortonPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams *p)
             cells_cap *= 2;
             cells = realloc(cells, cells_cap * sizeof *cells);
         }
-        cells[cells_cnt++] = (Point){x, y};
+        cells[cells_cnt++] = (LBPoint){x, y};
 
         // target reached -> merge task cells into larger rectangles and flush buffer
         if (sum >= target)
         {
-            Rect *rects;
+            LBRect *rects;
             size_t nrects;
             merge_cells_into_rects(cells, cells_cnt, &rects, &nrects);
 
@@ -385,7 +418,7 @@ void runMortonPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams *p)
     // flush and append leftover indices (final task)
     if (cells_cnt > 0)
     {
-        Rect *rects;
+        LBRect *rects;
         size_t nrects;
         merge_cells_into_rects(cells, cells_cnt, &rects, &nrects);
         for (size_t i = 0; i < nrects; ++i)
@@ -633,15 +666,20 @@ double *laik_lb_measure(Laik_Partitioning *p, double ttime)
     laik_svg_profiler_enter(inst, __func__);
 
     // allocate weight array and zero-initialize
+    // for t tasks, the final t elements of the array are the raw times taken by each task (starting from 0, one after the last weight)
     int dims = p->space->dims;
     int task = laik_myid(group);
+    int gsize = group->size;
     int64_t size_x = space->range.to.i[0] - space->range.from.i[0];
     int64_t size_y = dims >= 2 ? (space->range.to.i[1] - space->range.from.i[1]) : 1;
     int64_t size_z = dims >= 3 ? (space->range.to.i[2] - space->range.from.i[2]) : 1;
     int64_t size = size_x * size_y * size_z;
 
-    weights = (double *)safe_malloc(sizeof(double) * size);
-    memset(weights, 0, sizeof(double) * size);
+    weights = (double *)safe_malloc(sizeof(double) * (size /* elements in index space */ + gsize /* number of tasks */));
+    memset(weights, 0, sizeof(double) * (size + gsize));
+
+    // store time taken by own task
+    weights[size + task] = ttime;
 
     // calculate weight and fill array at own indices
     // 1. accumulate number of items
@@ -692,7 +730,7 @@ double *laik_lb_measure(Laik_Partitioning *p, double ttime)
         }
     }
 
-    printf("task %d took %fs, nitems: %d, weight %f\n", task, ttime, tnitems, tweight);
+    laik_log(1, "took %fs, nitems: %d, weight %f\n", ttime, tnitems, tweight);
 
     // initialize laik space for aggregating weights
     Laik_Space *weightspace;
@@ -700,16 +738,21 @@ double *laik_lb_measure(Laik_Partitioning *p, double ttime)
     Laik_Partitioning *weightpart1, *weightpart2;
 
     // use weights directly as input data
-    weightspace = laik_new_space_1d(inst, size);
+    weightspace = laik_new_space_1d(inst, size + gsize);
     weightdata = laik_new_data(weightspace, laik_Double);
     weightpart1 = laik_new_partitioning(laik_All, group, weightspace, NULL);
-    laik_data_provide_memory(weightdata, weights, size * sizeof(double));
+    laik_data_provide_memory(weightdata, weights, (size + gsize) * sizeof(double));
     laik_set_initial_partitioning(weightdata, weightpart1);
 
     // collect times into weights, shared among all tasks
     weightpart2 = laik_new_partitioning(laik_All, group, weightspace, NULL);
     laik_switchto_partitioning(weightdata, weightpart2, LAIK_DF_Preserve, LAIK_RO_Sum);
 
+    // print time taken by each task
+    if (task == 0)
+    {
+        print_times(weights, size, gsize);
+    }
     laik_svg_profiler_exit(inst, __func__);
     return weights;
 }
