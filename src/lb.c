@@ -58,6 +58,22 @@ static void *safe_malloc(size_t n)
     return p;
 }
 
+// public: get algorithm string from enum
+const char *laik_get_lb_algorithm_name(Laik_LBAlgorithm algo)
+{
+    switch (algo)
+    {
+    case LB_RCB:
+        return "rcb";
+    case LB_HILBERT:
+        return "hilbert";
+    case LB_MORTON:
+        return "morton";
+    default:
+        return "unknown";
+    }
+}
+
 ///////////////////
 // range weights //
 ///////////////////

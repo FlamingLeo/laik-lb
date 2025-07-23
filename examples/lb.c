@@ -75,6 +75,26 @@ static void visualize()
     system("python3 lbviz/visualize.py");
 }
 
+// purge json data and images
+static void remove_plots()
+{
+    system("../scripts/remove_plots.sh");
+}
+
+// plot program trace through external script
+static void save_trace()
+{
+    system("python3 lbviz/trace.py");
+}
+
+// enable program trace visualization
+static void enable_trace(int id, Laik_Instance *inst)
+{
+    char filename[MAX_FILENAME_LENGTH];
+    sprintf(filename, "lbviz/lb-%d.json", id);
+    laik_svg_enable_profiling(inst, filename);
+}
+
 ////////////////////////
 // iteration examples //
 ////////////////////////
@@ -86,11 +106,16 @@ int main_1d(int argc, char *argv[], int64_t spsize, int lcount)
     Laik_Instance *inst = laik_init(&argc, &argv);
     Laik_Group *world = laik_world(inst);
     int id = laik_myid(world);
+    Laik_LBAlgorithm lbalg = LB_RCB;
+
+    enable_trace(id, inst);
+    laik_svg_profiler_enter(inst, __func__);
 
     if (id == 0)
     {
         printf("Running 1D example with %d iterations.\n", lcount);
         printf("Space size %ld.\n", spsize);
+        printf("Using LB algorithm: %s\n", laik_get_lb_algorithm_name(lbalg));
     }
 
     Laik_Space *space = laik_new_space_1d(inst, spsize);
@@ -98,7 +123,6 @@ int main_1d(int argc, char *argv[], int64_t spsize, int lcount)
     Laik_Partitioner *parter = laik_new_block_partitioner1();
     Laik_Partitioning *part = laik_new_partitioning(parter, world, space, 0);
     laik_switchto_partitioning(data, part, LAIK_DF_None, LAIK_RO_None);
-    Laik_LBAlgorithm lbalg = LB_RCB;
 
     int iterations = (id + 1) * 10;
 
@@ -141,7 +165,12 @@ int main_1d(int argc, char *argv[], int64_t spsize, int lcount)
     VISUALIZE(id);
 
     // done
+    laik_svg_profiler_exit(inst, __func__);
+    laik_svg_profiler_export_json(inst);
     laik_finalize(inst);
+    if (id == 0)
+        save_trace();
+    return 0;
 }
 
 // 2d example
@@ -152,11 +181,16 @@ int main_2d(int argc, char *argv[], int64_t spsize, int lcount)
     Laik_Instance *inst = laik_init(&argc, &argv);
     Laik_Group *world = laik_world(inst);
     int id = laik_myid(world);
+    Laik_LBAlgorithm lbalg = LB_HILBERT;
+
+    enable_trace(id, inst);
+    laik_svg_profiler_enter(inst, __func__);
 
     if (id == 0)
     {
         printf("Running 2D example with %d iterations.\n", lcount);
-        printf("Space size %ld = %ldx%ld.\n", spsize, sdsize, sdsize);
+        printf("Space size %ldx%ld = %ld.\n", sdsize, sdsize, spsize);
+        printf("Using LB algorithm: %s\n", laik_get_lb_algorithm_name(lbalg));
     }
 
     Laik_Space *space = laik_new_space_2d(inst, sdsize, sdsize);
@@ -164,10 +198,9 @@ int main_2d(int argc, char *argv[], int64_t spsize, int lcount)
     Laik_Partitioner *parter = laik_new_bisection_partitioner();
     Laik_Partitioning *part = laik_new_partitioning(parter, world, space, 0);
     laik_switchto_partitioning(data, part, LAIK_DF_None, LAIK_RO_None);
-    Laik_LBAlgorithm lbalg = LB_HILBERT;
 
     int iterations = (id + 1) * 10;
-    double c = 0.5; // sleep time constant multiplier
+    double c = 0.25; // sleep time constant multiplier
 
     // debug logging
     int64_t from_x, from_y, to_x, to_y;
@@ -209,15 +242,23 @@ int main_2d(int argc, char *argv[], int64_t spsize, int lcount)
     VISUALIZE(id);
 
     // done
+    laik_svg_profiler_exit(inst, __func__);
+    laik_svg_profiler_export_json(inst);
     laik_finalize(inst);
+    if (id == 0)
+        save_trace();
+    return 0;
 }
 
 // choose example and parameters based on input
 //
 // USAGE: <mpirun -n x> ./lb [example] <spacesize> <loopcount>
-//   e.g: mpirun -n 4 ./lb 1 250000 10
+//   e.g:  mpirun -n 4  ./lb 1 250000 10
 int main(int argc, char *argv[])
 {
+    // prepare program trace visualization
+    remove_plots();
+
     // example must be specified
     if (argc < 2)
         exit(1);

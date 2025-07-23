@@ -21,6 +21,9 @@ typedef enum {
     LB_HILBERT
 } Laik_LBAlgorithm;
 
+// get algorithm string from enum
+const char *laik_get_lb_algorithm_name(Laik_LBAlgorithm algo);
+
 //////////////////////
 // sfc partitioners //
 //////////////////////
