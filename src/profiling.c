@@ -23,6 +23,12 @@
 #include <stdarg.h>
 #include <string.h>
 
+#if 1
+#define EARLY_RETURN() return
+#else
+#define EARLY_RETURN() (void)0
+#endif
+
 /**
  * Application controlled profiling
  *
@@ -183,8 +189,7 @@ void laik_profile_user_stop(Laik_Instance* i)
         if (laik_profinst == i) {
             if (i->profiling->do_profiling) {
                 if (i->profiling->user_timer_active) {
-                    i->profiling->time_user = laik_wtime() -
-                                              i->profiling->timer_user;
+                    i->profiling->time_user = laik_wtime() - i->profiling->timer_user;
                     i->profiling->timer_user = 0.0;
                     i->profiling->user_timer_active = 0;
                 }
@@ -289,6 +294,8 @@ void laik_profile_printf(const char* msg, ...)
 // enable output-to-file mode for svg visualization
 void laik_svg_enable_profiling(Laik_Instance* i, const char* filename)
 {
+    EARLY_RETURN();
+
     if (laik_profinst) {
         if (laik_profinst == i) return;
         free_event_list(laik_profinst);
@@ -314,6 +321,8 @@ void laik_svg_enable_profiling(Laik_Instance* i, const char* filename)
 // call this (ideally) right before / at the start of the function to profile
 void laik_svg_profiler_enter(Laik_Instance* i, const char *func_name)
 {
+    EARLY_RETURN();
+
     if (laik_profinst) {
         if (laik_profinst == i) {
             if (i->profiling->do_profiling) {
@@ -338,6 +347,8 @@ void laik_svg_profiler_enter(Laik_Instance* i, const char *func_name)
 // call this (ideally) right after / at the end of the function to profile
 void laik_svg_profiler_exit(Laik_Instance* i, const char *func_name)
 {
+    EARLY_RETURN();
+
     if (laik_profinst) {
         if (laik_profinst == i) {
             if (i->profiling->do_profiling) {
@@ -360,9 +371,13 @@ void laik_svg_profiler_exit(Laik_Instance* i, const char *func_name)
     }
 }
 
-// export current profiler event state to json-formatted file
+// export current profiler event state to json-formatted file (or do nothing if profiling is disabled)
 void laik_svg_profiler_export_json(Laik_Instance* i)
 {
+    EARLY_RETURN();
+    
+    if(!(i->profiling->do_profiling)) return;
+
     FILE* out = (FILE*) i->profiling->profile_file;
 
     fprintf(out, "[\n");

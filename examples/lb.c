@@ -181,7 +181,7 @@ int main_2d(int argc, char *argv[], int64_t spsize, int lcount)
     Laik_Instance *inst = laik_init(&argc, &argv);
     Laik_Group *world = laik_world(inst);
     int id = laik_myid(world);
-    Laik_LBAlgorithm lbalg = LB_HILBERT;
+    Laik_LBAlgorithm lbalg = LB_RCB;
 
     enable_trace(id, inst);
     laik_svg_profiler_enter(inst, __func__);
@@ -230,7 +230,7 @@ int main_2d(int argc, char *argv[], int64_t spsize, int lcount)
         if (part == newpart)
             continue;
 
-        laik_switchto_partitioning(data, newpart, LAIK_DF_None, LAIK_RO_None);
+        laik_switchto_partitioning(data, newpart, LAIK_DF_Preserve, LAIK_RO_None);
 
         // free old partitioning
         laik_free_partitioning(part);

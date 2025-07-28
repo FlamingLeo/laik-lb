@@ -16,7 +16,7 @@
 
 /**
  * 2d Jacobi example (with load balancing).
- * 
+ *
  * TODO: make this example work with sfc load balancing algorithms
  */
 
@@ -33,10 +33,11 @@
 #define PROFILING 1
 #define SUM 1
 
-#define SIZE 2500
+#define SIZE 1024
 #define MAXITER 100
 #define RES_ITER 10
 #define WL_LB_ITER 5
+#define LB_ALGO LB_RCB
 
 #define FILENAME "lbviz/array_data.txt"
 // #define DO_VISUALIZATION
@@ -128,7 +129,7 @@ static void save_trace()
     /* npRead: pointer to new read partition based on new write partition borders */ \
     if ((_iter == 0) || (iter < _iter))                                              \
     {                                                                                \
-        if ((npWrite = laik_lb_balance(STOP_LB_SEGMENT, pWrite, LB_RCB)) == pWrite)  \
+        if ((npWrite = laik_lb_balance(STOP_LB_SEGMENT, pWrite, LB_ALGO)) == pWrite) \
             continue;                                                                \
                                                                                      \
         npRead = laik_new_partitioning(prRead, world, space, npWrite);               \
@@ -200,11 +201,9 @@ int main(int argc, char *argv[])
 
     int size = 0;
     int maxiter = 0;
-    int repart = 0;             // enforce repartitioning after <repart> iterations
     bool use_cornerhalo = true; // use halo partitioner including corners?
     bool do_profiling = PROFILING;
     bool do_sum = SUM;
-    bool do_exec = false;
 
     int arg = 1;
     int myid = laik_myid(world);
@@ -213,8 +212,6 @@ int main(int argc, char *argv[])
         size = atoi(argv[arg]);
     if (argc > arg + 1)
         maxiter = atoi(argv[arg + 1]);
-    if (argc > arg + 2)
-        repart = atoi(argv[arg + 2]);
 
     if (size == 0)
         size = SIZE; // size² entries
@@ -227,8 +224,6 @@ int main(int argc, char *argv[])
                size, size, .000016 * size * size, maxiter, laik_size(world));
         if (!use_cornerhalo)
             printf(" (halo without corners)");
-        if (repart > 0)
-            printf("\n  with repartitioning every %d iterations\n", repart);
         printf("\n");
     }
 
@@ -287,6 +282,7 @@ int main(int argc, char *argv[])
     //   with y in [0;ysize], x in [0;xsize[
     //   base[y][x] is at (base + y * ystride + x)
     laik_get_map_2d(dWrite, 0, (void **)&baseW, &ysizeW, &ystrideW, &xsizeW);
+
     // arbitrary non-zero values based on global indexes to detect bugs
     for (uint64_t y = 0; y < ysizeW; y++)
         for (uint64_t x = 0; x < xsizeW; x++)
@@ -300,8 +296,7 @@ int main(int argc, char *argv[])
     int _last_iter = 0;
     int _res_iters = 0; // iterations done with residuum calculation
 
-    if (do_profiling)
-        laik_svg_profiler_enter(inst, __func__);
+    laik_svg_profiler_enter(inst, __func__);
 
     int iter = 0;
     for (; iter < maxiter; iter++)
@@ -354,9 +349,7 @@ int main(int argc, char *argv[])
         // check for residuum every RES_ITER iterations
         if (((iter % RES_ITER) == 0) && (iter >= RES_ITER))
         {
-            // NEW ###################################
             laik_lb_balance(START_LB_SEGMENT, 0, 0);
-            // ################################### NEW
 
             double newValue, diff, res;
             res = 0.0;
@@ -370,17 +363,13 @@ int main(int argc, char *argv[])
                                        baseR[(y + 1) * ystrideR + x]);
                     diff = baseR[y * ystrideR + x] - newValue;
                     res += diff * diff;
-                    // NEW #############################
                     DO_WORKLOAD(WL_LB_ITER);
                     baseW[y * ystrideW + x] = newValue;
-                    // ############################# NEW
                 }
             }
             _res_iters++;
 
-            // NEW ##################
             LOAD_BALANCE(WL_LB_ITER); // load balancing has to be performed before aggregated sum, otherwise the times are incorrect (because of the sum barrier)
-            // ################## NEW
 
             // calculate global residuum
             laik_switchto_flow(sumD, LAIK_DF_None, LAIK_RO_None);
@@ -417,9 +406,7 @@ int main(int argc, char *argv[])
         }
         else
         {
-            // NEW ###################################
             laik_lb_balance(START_LB_SEGMENT, 0, 0);
-            // ################################### NEW
 
             double newValue;
             for (int64_t y = y1; y < y2; y++)
@@ -430,15 +417,12 @@ int main(int argc, char *argv[])
                                        baseR[y * ystrideR + x - 1] +
                                        baseR[y * ystrideR + x + 1] +
                                        baseR[(y + 1) * ystrideR + x]);
-                    // NEW #############################
                     DO_WORKLOAD(WL_LB_ITER);
                     baseW[y * ystrideW + x] = newValue;
-                    // ############################# NEW
                 }
             }
-            // NEW ##################
+            
             LOAD_BALANCE(WL_LB_ITER);
-            // ################## NEW
         }
     }
 
@@ -482,11 +466,8 @@ int main(int argc, char *argv[])
     EXPORT_TO_FILE(myid, pWrite);
     VISUALIZE(myid);
 
-    if (do_profiling)
-    {
-        laik_svg_profiler_exit(inst, __func__);
-        laik_svg_profiler_export_json(inst);
-    }
+    laik_svg_profiler_exit(inst, __func__);
+    laik_svg_profiler_export_json(inst);
 
     laik_finalize(inst);
     if (do_profiling && myid == 0)

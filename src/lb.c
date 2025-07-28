@@ -93,195 +93,113 @@ static double get_idx_weight_2d(double *weights, int64_t size_x, int64_t x, int6
 ///////////////////
 // merging cells //
 ///////////////////
+#define MAX_RECTS 65536 // TODO: temporary, remove this
 
-/* local helper structs for merging 2D blocks */
-// a single 2d point defined by its coordinates
+// rectangle used for merging calculations
 typedef struct
 {
-    uint32_t x, y;
-} LBPoint;
-
-// a 2d rectangle defined by its corner points (one could also use two point structs here, but this seems easier to work with)
-typedef struct
-{
-    uint32_t x1, x2, y1, y2;
+    int x, y; // bottom left
+    int w, h; // width, height
 } LBRect;
 
-// a horizontal run along a row (same y-axis)
-// defined by the row we're on and the start and end x coordinates
+// list of rectangles
 typedef struct
 {
-    uint32_t y, x1, x2;
-} LBHorizontalRun;
+    LBRect rects[MAX_RECTS]; // TODO: make this a dynamic linked list for more flexibility
+    int count;
+} LBRectList;
 
-/* comparators for each scenario (points, runs, rectangles) */
-// (y, x)
-static int cmp_pt(const void *a, const void *b)
-{
-    const LBPoint *p = a, *q = b;
-    if (p->y != q->y)
-        return (p->y < q->y ? -1 : 1);
-    return (p->x < q->x ? -1 : p->x > q->x);
-}
-
-// (y, x1, x2)
-static int cmp_run(const void *a, const void *b)
-{
-    const LBHorizontalRun *r = a, *s = b;
-    if (r->y != s->y)
-        return (r->y < s->y ? -1 : 1);
-    if (r->x1 != s->x1)
-        return (r->x1 < s->x1 ? -1 : 1);
-    return (r->x2 < s->x2 ? -1 : r->x2 > s->x2);
-}
-
-// (x1, x2)
-static int cmp_rect(const void *a, const void *b)
-{
-    const LBRect *r = a, *s = b;
-    if (r->x1 != s->x1)
-        return (r->x1 < s->x1 ? -1 : 1);
-    if (r->x2 != s->x2)
-        return (r->x2 < s->x2 ? -1 : 1);
-    return 0;
-}
-
-// helper function to merge a set of pixels into the minimal covering rectangles
+// helper function to merge singular indices into large rectangles
 //
-// this works by traversing each row, building the horizontal runs from one end to the other,
-// then "stitching" these vertically only if each point has another point above itself
+// this function takes as input a "map" of each index in the original index space to its corresponding task id
+// i.e. the value at coordinate y * size_x + x is the task to which this index belongs to
 //
-// this is basically necessary when working with sfc algorithms, because having one range per index is insanely time-expensive
-// the other way would be some sort of bounding-box algorithm over each region, which might be simpler, but sacrifices some precision
-//
-// this approach is still not perfect, running in O(n log n) due to sorts and some possibly overcomplicated logic towards the end
-static void merge_cells_into_rects(const LBPoint *cells, size_t n, LBRect **out_rects, size_t *out_count)
+// for each task T:
+// |  create an empty list L_T of rectangles (ranges) for T
+// |  repeat until we've exhausted this task's cells:
+// |  |  find the bottom-leftmost cell belonging to T
+// |  |  from there, measure how far right we can go (along the x axis) until we reach the edge / a cell which doesn't belong to T anymore (max width)
+// |  |  extend this rectangle upwards, each time updating (shrinking) the weight if necessary to still encompass all cells that belong to T
+// |  |  save rectangle with maximum area and add to list L_T
+// |  |  mark cells as used (-1)
+// |  done
+// done
+static void merge_rects(int *grid1D, int width, int height, LBRectList *out, int tidcount)
 {
-    if (n == 0)
+#define IDX(x, y) ((y) * width + (x))
+    for (int tid = 0; tid < tidcount; ++tid)
     {
-        *out_rects = NULL;
-        *out_count = 0;
-        return;
-    }
+        LBRectList *rl = &out[tid];
+        rl->count = 0;
 
-    // 1. sort points by (y,x)
-    LBPoint *pts = (LBPoint *)safe_malloc(n * sizeof(LBPoint));
-    memcpy(pts, cells, n * sizeof(LBPoint));
-    qsort(pts, n, sizeof(LBPoint), cmp_pt);
-
-    // 2. build horizontal runs
-    LBHorizontalRun *runs = (LBHorizontalRun *)safe_malloc(n * sizeof(LBHorizontalRun));
-    size_t nruns = 0;
-
-    uint32_t run_y = pts[0].y;
-    uint32_t run_x0 = pts[0].x;
-    uint32_t prev_x = pts[0].x;
-
-    // pass over sorted points
-    for (size_t i = 1; i < n; ++i)
-    {
-        // if the row changes OR the next x is not exactly one past the previous (should always be the case?),
-        // close the current run and start a new one
-        if (pts[i].y != run_y || pts[i].x != prev_x + 1)
+        // keep carving until no more cells are found for this task
+        while (1)
         {
-            // end previous run
-            runs[nruns++] = (LBHorizontalRun){run_y, run_x0, prev_x + 1};
+            int found = 0, x0 = 0, y0 = 0;
 
-            // start a new run
-            run_y = pts[i].y;
-            run_x0 = pts[i].x;
-        }
-        prev_x = pts[i].x;
-    }
-
-    // finish the last run and free point buffer
-    runs[nruns++] = (LBHorizontalRun){run_y, run_x0, prev_x + 1};
-    free(pts);
-
-    // 3. sort runs by (y,x1,x2)
-    qsort(runs, nruns, sizeof(LBHorizontalRun), cmp_run);
-
-    // prepare active‐rect and output arrays for vertical stitching
-    LBRect *active = (LBRect *)safe_malloc(nruns * sizeof(LBRect));      // set of rectangles to extend downwards
-    LBRect *next_active = (LBRect *)safe_malloc(nruns * sizeof(LBRect)); // temp. buffer for next row's active set
-    LBRect *output = (LBRect *)safe_malloc(nruns * sizeof(LBRect));      // accumulates finished rectangles
-    size_t act_cnt = 0;
-    size_t out_cnt = 0;
-
-    // 4. perform vertical stitching
-    size_t i = 0;
-    while (i < nruns)
-    {
-        uint32_t y = runs[i].y;
-        size_t start_i = i;
-
-        // collect all runs at this y
-        while (i < nruns && runs[i].y == y)
-            ++i;
-        size_t end_i = i;
-
-        // sort active rects by (x1,x2) each row
-        qsort(active, act_cnt, sizeof(LBRect), cmp_rect);
-
-        // pointers into runs[start_i..end_i) and active[0..act_cnt)
-        size_t r = start_i;
-        size_t a = 0;
-        size_t na = 0;
-
-        // match or create
-        while (r < end_i && a < act_cnt)
-        {
-            uint32_t rx1 = runs[r].x1;
-            uint32_t rx2 = runs[r].x2;
-            uint32_t ax1 = active[a].x1;
-            uint32_t ax2 = active[a].x2;
-
-            if (rx1 == ax1 && rx2 == ax2)
+            // find bottom‑leftmost cell == tid
+            for (int y = 0; y < height && !found; ++y)
             {
-                // extend active rectangle downward
-                active[a].y2 = y + 1;
-                next_active[na++] = active[a];
-                ++r;
-                ++a;
+                for (int x = 0; x < width; ++x)
+                {
+                    if (grid1D[IDX(x, y)] == tid)
+                    {
+                        x0 = x;
+                        y0 = y;
+                        found = 1;
+                        break;
+                    }
+                }
             }
-            else if (ax1 < rx1 || (ax1 == rx1 && ax2 < rx2))
+
+            // couldn't find anything for this task?
+            if (!found)
+                break;
+
+            // scan right to get initial width
+            int w = 0;
+            while (x0 + w < width && grid1D[IDX(x0 + w, y0)] == tid)
+                ++w;
+
+            // extend upward to maximize area
+            int best_area = w;
+            int best_w = w; // remember the width at which best_area occurs
+            int best_h = 1;
+            int curr_w = w;
+
+            for (int h = 2; y0 + h <= height; ++h)
             {
-                // active[a] has no matching run, so close it (move to output)
-                output[out_cnt++] = active[a];
-                ++a;
+                // measure run of tids in row y0 + h − 1
+                int w_h = 0;
+                while (x0 + w_h < width && grid1D[IDX(x0 + w_h, y0 + h - 1)] == tid)
+                    ++w_h;
+                if (w_h == 0)
+                    break;
+
+                if (w_h < curr_w)
+                    curr_w = w_h;
+                int area = curr_w * h;
+                if (area > best_area)
+                {
+                    best_area = area;
+                    best_w = curr_w;
+                    best_h = h;
+                }
             }
-            else
+
+            // record the rectangle using best_w and best_h
+            rl->rects[rl->count++] = (LBRect){x0, y0, best_w, best_h};
+
+            // mark covered cells “used” by setting them to -1
+            for (int dy = 0; dy < best_h; ++dy)
             {
-                // go to new run at this row
-                next_active[na++] = (LBRect){rx1, rx2, y, y + 1};
-                ++r;
+                for (int dx = 0; dx < best_w; ++dx)
+                {
+                    grid1D[IDX(x0 + dx, y0 + dy)] = -1;
+                }
             }
         }
-
-        // leftover active -> close
-        while (a < act_cnt)
-            output[out_cnt++] = active[a++];
-
-        // leftover runs -> new rects
-        while (r < end_i)
-            next_active[na++] = (LBRect){runs[r].x1, runs[r].x2, y, y + 1}, ++r;
-
-        // swap active & next_active
-        memcpy(active, next_active, na * sizeof(LBRect));
-        act_cnt = na;
     }
-
-    // 5. close any still‐active rects (grown as far down as possible)
-    for (size_t a = 0; a < act_cnt; ++a)
-        output[out_cnt++] = active[a];
-
-    // free memory and return out parameters
-    free(runs);
-    free(active);
-    free(next_active);
-
-    *out_rects = output;
-    *out_count = out_cnt;
 }
 
 //////////////////////
@@ -384,10 +302,6 @@ void runMortonPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams *p)
     int task = 0;
     double sum = 0.0;
 
-    // dynamic array for the current task's cells
-    size_t cells_cap = 1024, cells_cnt = 0;
-    LBPoint *cells = (LBPoint *)safe_malloc(cells_cap * sizeof *cells);
-
     laik_log(1, "size %ld, totalw %f, targetw %f for %d procs\n", N, total_w, target, tidcount);
 
     // scan morton curve and partition based on prefix sum
@@ -397,59 +311,20 @@ void runMortonPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams *p)
         morton2D_d2xy(m, &x, &y);
         sum += get_idx_weight_2d(weights, size_x, (int64_t)x, (int64_t)y);
 
-        // store current point in task cell buffer and possibly grow dynamic task cell array
-        if (cells_cnt == cells_cap)
-        {
-            cells_cap *= 2;
-            cells = realloc(cells, cells_cap * sizeof *cells);
-        }
-        cells[cells_cnt++] = (LBPoint){x, y};
+        Laik_Range ra = {
+            .space = space,
+            .from = {{x, y, 0}},
+            .to = {{x + 1, y + 1, 0}}};
+        laik_append_range(r, task, &ra, 0, 0);
 
         // target reached -> merge task cells into larger rectangles and flush buffer
         if (sum >= target)
         {
-            LBRect *rects;
-            size_t nrects;
-            merge_cells_into_rects(cells, cells_cnt, &rects, &nrects);
-
-            // append each merged rect
-            for (size_t i = 0; i < nrects; ++i)
-            {
-                Laik_Range big = {
-                    .space = space,
-                    .from = {{rects[i].x1, rects[i].y1, 0}},
-                    .to = {{rects[i].x2, rects[i].y2, 0}}};
-
-                laik_append_range(r, task, &big, 0, 0);
-            }
-            free(rects);
-
-            // reset for next task
             task++;
             sum = 0.0;
-            cells_cnt = 0;
         }
     }
 
-    // flush and append leftover indices (final task)
-    if (cells_cnt > 0)
-    {
-        LBRect *rects;
-        size_t nrects;
-        merge_cells_into_rects(cells, cells_cnt, &rects, &nrects);
-        for (size_t i = 0; i < nrects; ++i)
-        {
-            Laik_Range big = {
-                .space = space,
-                .from = {{rects[i].x1, rects[i].y1, 0}},
-                .to = {{rects[i].x2, rects[i].y2, 0}}};
-
-            laik_append_range(r, task, &big, 0, 0);
-        }
-        free(rects);
-    }
-
-    free(cells);
     laik_svg_profiler_exit(inst, __func__);
 }
 
@@ -458,7 +333,7 @@ void runHilbertPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams *p)
     Laik_Instance *inst = p->space->inst;
     laik_svg_profiler_enter(inst, __func__);
 
-    unsigned tidcount = p->group->size;
+    int tidcount = p->group->size;
     int dims = p->space->dims;
     double *weights = (double *)p->partitioner->data;
 
@@ -488,9 +363,8 @@ void runHilbertPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams *p)
     int task = 0;
     double sum = 0.0;
 
-    // dynamic array for the current task's cells
-    size_t cells_cap = 1024, cells_cnt = 0;
-    LBPoint *cells = (LBPoint *)safe_malloc(cells_cap * sizeof *cells);
+    // allocate index-to-task mapping array
+    int *idxGrid = (int *)safe_malloc(N * sizeof(int));
 
     laik_log(1, "size %ld, totalw %f, targetw %f for %d procs\n", N, total_w, target, tidcount);
 
@@ -500,60 +374,34 @@ void runHilbertPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams *p)
         uint32_t x, y;
         hilbert_d2xy(b, m, &x, &y);
         sum += get_idx_weight_2d(weights, size_x, (int64_t)x, (int64_t)y);
-
-        // store current point in task cell buffer and possibly grow dynamic task cell array
-        if (cells_cnt == cells_cap)
-        {
-            cells_cap *= 2;
-            cells = realloc(cells, cells_cap * sizeof *cells);
-        }
-        cells[cells_cnt++] = (LBPoint){x, y};
+        idxGrid[y * size_x + x] = task;
 
         // target reached -> merge task cells into larger rectangles and flush buffer
         if (sum >= target)
         {
-            LBRect *rects;
-            size_t nrects;
-            merge_cells_into_rects(cells, cells_cnt, &rects, &nrects);
-
-            // append each merged rect
-            for (size_t i = 0; i < nrects; ++i)
-            {
-                Laik_Range big = {
-                    .space = space,
-                    .from = {{rects[i].x1, rects[i].y1, 0}},
-                    .to = {{rects[i].x2, rects[i].y2, 0}}};
-
-                laik_append_range(r, task, &big, 0, 0);
-            }
-            free(rects);
-
             // reset for next task
             task++;
             sum = 0.0;
-            cells_cnt = 0;
         }
     }
 
-    // flush and append leftover indices (final task)
-    if (cells_cnt > 0)
+    // decompose (destroy) idxgrid into axis-aligned rectangles
+    LBRectList out[tidcount];
+    merge_rects(idxGrid, size_x, size_y, out, tidcount);
+    free(idxGrid);
+
+    for (int tid = 0; tid < tidcount; ++tid)
     {
-        LBRect *rects;
-        size_t nrects;
-        merge_cells_into_rects(cells, cells_cnt, &rects, &nrects);
-        for (size_t i = 0; i < nrects; ++i)
+        for (int i = 0; i < out[tid].count; ++i)
         {
-            Laik_Range big = {
-                .space = space,
-                .from = {{rects[i].x1, rects[i].y1, 0}},
-                .to = {{rects[i].x2, rects[i].y2, 0}}};
-
-            laik_append_range(r, task, &big, 0, 0);
+            LBRect *re = &out[tid].rects[i];
+            Laik_Range ra = {.space = space,
+                             .from = {{re->x, re->y, 0}},
+                             .to = {{(re->x) + (re->w), (re->y) + (re->h), 0}}};
+            laik_append_range(r, tid, &ra, 0, 0);
         }
-        free(rects);
     }
 
-    free(cells);
     laik_svg_profiler_exit(inst, __func__);
 }
 
