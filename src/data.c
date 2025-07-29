@@ -507,6 +507,7 @@ void laik_allocateMap(Laik_Mapping* m, Laik_SwitchStat* ss)
 
     // number of bytes to allocate: no space around required indexes
     uint64_t size = m->count * d->elemsize;
+
     laik_switchstat_malloc(ss, size);
 
     // use the allocator of the mapping

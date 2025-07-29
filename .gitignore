@@ -11,6 +11,7 @@ Makefile.config
 compile_commands.json
 /build*/
 *.so.dSYM/
+*.log
 todo.txt
 /messungen/
 *core*

@@ -96,8 +96,8 @@ static double get_idx_weight_2d(double *weights, int64_t size_x, int64_t x, int6
 // rectangle used for merging calculations
 typedef struct
 {
-    int x, y; // bottom left
-    int w, h; // width, height
+    int64_t x, y; // bottom left
+    int64_t w, h; // width, height
 } LBRect;
 
 // list of rectangles
@@ -317,6 +317,7 @@ void runHilbertPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams *p)
             Laik_Range ra = {.space = space,
                              .from = {{re->x, re->y, 0}},
                              .to = {{(re->x) + (re->w), (re->y) + (re->h), 0}}};
+            laik_log(1, "T%d adding range: [%ld,%ld]->(%ld,%ld)\n", tid, ra.from.i[0], ra.from.i[1], ra.to.i[0], ra.to.i[1]);
             laik_append_range(r, tid, &ra, 0, 0);
         }
     }
@@ -640,6 +641,12 @@ double *laik_lb_measure(Laik_Partitioning *p, double ttime)
     {
         print_times(weights, size, gsize);
     }
+
+    // free partitionings since we don't need them anymore
+    laik_free_partitioning(weightpart1);
+    laik_free_partitioning(weightpart2);
+    laik_free_space(weightspace);
+
     laik_svg_profiler_exit(inst, __func__);
     return weights;
 }
@@ -664,14 +671,6 @@ Laik_Partitioning *laik_lb_balance(Laik_LBState state, Laik_Partitioning *partit
 
     // collect weights associated for each task
     double *weights = laik_lb_measure(partitioning, laik_wtime() - time);
-
-    // if the balancing function is called for the first time, return the partitioning unchanged
-    if (!weights)
-    {
-        // might not even be visible?
-        laik_svg_profiler_exit(inst, __func__);
-        return partitioning;
-    }
 
     // use task weights to create new partitioning
     assert(weights != NULL);
