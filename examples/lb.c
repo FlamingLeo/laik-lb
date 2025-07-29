@@ -181,7 +181,7 @@ int main_2d(int argc, char *argv[], int64_t spsize, int lcount)
     Laik_Instance *inst = laik_init(&argc, &argv);
     Laik_Group *world = laik_world(inst);
     int id = laik_myid(world);
-    Laik_LBAlgorithm lbalg = LB_RCB;
+    Laik_LBAlgorithm lbalg = LB_HILBERT;
 
     enable_trace(id, inst);
     laik_svg_profiler_enter(inst, __func__);

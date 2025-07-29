@@ -23,7 +23,7 @@
 #include <stdarg.h>
 #include <string.h>
 
-#if 1
+#if 0
 #define EARLY_RETURN() return
 #else
 #define EARLY_RETURN() (void)0

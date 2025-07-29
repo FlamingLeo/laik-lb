@@ -58,6 +58,18 @@ static void *safe_malloc(size_t n)
     return p;
 }
 
+// safely reallocate memory or panic on failure
+static void *safe_realloc(void *ptr, size_t n)
+{
+    void *p = realloc(ptr, n);
+    if (!p)
+    {
+        laik_panic("Could not reallocate enough memory!");
+        exit(EXIT_FAILURE);
+    }
+    return p;
+}
+
 // public: get algorithm string from enum
 const char *laik_get_lb_algorithm_name(Laik_LBAlgorithm algo)
 {
@@ -91,7 +103,6 @@ static double get_idx_weight_2d(double *weights, int64_t size_x, int64_t x, int6
 ///////////////////
 // merging cells //
 ///////////////////
-#define MAX_RECTS 65536 // TODO: temporary, remove this
 
 // rectangle used for merging calculations
 typedef struct
@@ -103,9 +114,29 @@ typedef struct
 // list of rectangles
 typedef struct
 {
-    LBRect rects[MAX_RECTS]; // TODO: make this a dynamic linked list for more flexibility
-    int count;
+    LBRect *rects; // dynamically‑allocated array
+    int count;     // in use
+    int capacity;  // allocated
 } LBRectList;
+
+// helper function called once per task to set up an empty rectangle list
+static void init_rect_list(LBRectList *rl)
+{
+    rl->capacity = 16;
+    rl->count = 0;
+    rl->rects = (LBRect *)safe_malloc(rl->capacity * sizeof(LBRect));
+}
+
+// helper function to dynamically grow rectangle list
+static void append_rect(LBRectList *rl, LBRect r)
+{
+    if (rl->count == rl->capacity)
+    {
+        rl->capacity *= 2;
+        rl->rects = (LBRect *)safe_realloc(rl->rects, rl->capacity * sizeof(LBRect));
+    }
+    rl->rects[rl->count++] = r;
+}
 
 // helper function to merge singular indices into large rectangles
 //
@@ -122,6 +153,8 @@ typedef struct
 // |  |  mark cells as used (-1)
 // |  done
 // done
+//
+// there's probably better ways of doing this, especially for hilbert curves (quadtrees), but this should be versatile enough to work with various algorithms
 static void merge_rects(int *grid1D, int width, int height, LBRectList *out, int tidcount)
 {
 #define IDX(x, y) ((y) * width + (x))
@@ -186,7 +219,7 @@ static void merge_rects(int *grid1D, int width, int height, LBRectList *out, int
             }
 
             // record the rectangle using best_w and best_h
-            rl->rects[rl->count++] = (LBRect){x0, y0, best_w, best_h};
+            append_rect(rl, (LBRect){x0, y0, best_w, best_h});
 
             // mark covered cells “used” by setting them to -1
             for (int dy = 0; dy < best_h; ++dy)
@@ -305,23 +338,33 @@ void runHilbertPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams *p)
     }
 
     // decompose (destroy) idxgrid into axis-aligned rectangles
-    LBRectList out[tidcount];
+    // each task has its own dynamic list of rectangles (soon-to-be ranges)
+    LBRectList *out = (LBRectList *)safe_malloc(tidcount * sizeof(LBRectList));
+    for (int tid = 0; tid < tidcount; ++tid)
+    {
+        init_rect_list(&out[tid]);
+    }
     merge_rects(idxGrid, size_x, size_y, out, tidcount);
-    free(idxGrid);
 
+    // pass merged rectangles as ranges to range receiver
     for (int tid = 0; tid < tidcount; ++tid)
     {
         for (int i = 0; i < out[tid].count; ++i)
         {
             LBRect *re = &out[tid].rects[i];
-            Laik_Range ra = {.space = space,
-                             .from = {{re->x, re->y, 0}},
-                             .to = {{(re->x) + (re->w), (re->y) + (re->h), 0}}};
-            laik_log(1, "T%d adding range: [%ld,%ld]->(%ld,%ld)\n", tid, ra.from.i[0], ra.from.i[1], ra.to.i[0], ra.to.i[1]);
-            laik_append_range(r, tid, &ra, 0, 0);
+            laik_append_range(r, tid,
+                              &(Laik_Range){.space = space,
+                                            .from = {{re->x, re->y, 0}},
+                                            .to = {{re->x + re->w, re->y + re->h, 0}}},
+                              0, 0);
         }
+        // won't be needing this anymore...
+        free(out[tid].rects);
     }
 
+    // free remaining memory
+    free(out);
+    free(idxGrid);
     laik_svg_profiler_exit(inst, __func__);
 }
 
