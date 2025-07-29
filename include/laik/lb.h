@@ -17,7 +17,6 @@ typedef enum {
 // enum defining currently available load balancing algorithms
 typedef enum {
     LB_RCB,
-    LB_MORTON,
     LB_HILBERT
 } Laik_LBAlgorithm;
 
@@ -33,12 +32,6 @@ void runHilbertPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams *p);
 
 // create new hilbert curve partitioner
 Laik_Partitioner *laik_new_hilbert_partitioner(double *tweights);
-
-// main morton curve (z-curve) function
-void runMortonPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams *p);
-
-// create new morton curve partitioner
-Laik_Partitioner *laik_new_morton_partitioner(double *tweights);
 
 /////////////////////
 // rcb partitioner //

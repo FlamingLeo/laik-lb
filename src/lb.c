@@ -67,8 +67,6 @@ const char *laik_get_lb_algorithm_name(Laik_LBAlgorithm algo)
         return "rcb";
     case LB_HILBERT:
         return "hilbert";
-    case LB_MORTON:
-        return "morton";
     default:
         return "unknown";
     }
@@ -206,8 +204,8 @@ static void merge_rects(int *grid1D, int width, int height, LBRectList *out, int
 // sfc partitioners //
 //////////////////////
 
-// TODO: make these work with domain sizes (sides) that are not powers of 2
-//       also possibly make them work for non-square (rectangular, w != h) domains?
+// TODO: make this work with domain sizes (sides) that are not powers of 2
+//       also possibly make it work for non-square (rectangular, w != h) domains?
 // TODO: 3d
 
 // hilbert space-filling curve
@@ -245,88 +243,9 @@ static inline void hilbert_d2xy(int b, uint32_t d, uint32_t *x, uint32_t *y)
     }
 }
 
-// morton (z) space-filling curve
-static inline uint32_t morton2D_compact(uint64_t x)
-{
-    x &= 0x5555555555555555ULL;
-    x = (x ^ (x >> 1)) & 0x3333333333333333ULL;
-    x = (x ^ (x >> 2)) & 0x0F0F0F0F0F0F0F0FULL;
-    x = (x ^ (x >> 4)) & 0x00FF00FF00FF00FFULL;
-    x = (x ^ (x >> 8)) & 0x0000FFFF0000FFFFULL;
-    x = (x ^ (x >> 16)) & 0x00000000FFFFFFFFULL;
-    return (uint32_t)x;
-}
-
-// d -> (x,y) on a (2^b * 2^b) morton curve
-static inline void morton2D_d2xy(uint64_t d, uint32_t *x, uint32_t *y)
-{
-    *x = morton2D_compact(d);
-    *y = morton2D_compact(d >> 1);
-}
-
 // ------------------------- //
 // laik functions start here //
 // ------------------------- //
-
-void runMortonPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams *p)
-{
-    Laik_Instance *inst = p->space->inst;
-    laik_svg_profiler_enter(inst, __func__);
-
-    unsigned tidcount = p->group->size;
-    int dims = p->space->dims;
-    double *weights = (double *)p->partitioner->data;
-
-    assert(dims == 2); // TODO: remove once 3d is supported
-
-    Laik_Space *space = p->space;
-    Laik_Range range = space->range;
-
-    // validate square domain with side as a power of 2
-    int64_t size_x = range.to.i[0] - range.from.i[0];
-    int64_t size_y = range.to.i[1] - range.from.i[1];
-    assert(size_x > 0 && size_y > 0 && size_x == size_y && is_power_of_two(size_x) && is_power_of_two(size_y));
-
-    // compute total weight
-    uint64_t N = size_x * size_y;
-    double total_w = 0.0;
-    for (uint64_t m = 0; m < N; ++m)
-    {
-        uint32_t x, y;
-        morton2D_d2xy(m, &x, &y);
-        total_w += get_idx_weight_2d(weights, size_x, (int64_t)x, (int64_t)y);
-    }
-
-    // define variables for distributing chunks evenly based on weight across all tasks
-    double target = total_w / (double)tidcount;
-    int task = 0;
-    double sum = 0.0;
-
-    laik_log(1, "size %ld, totalw %f, targetw %f for %d procs\n", N, total_w, target, tidcount);
-
-    // scan morton curve and partition based on prefix sum
-    for (uint64_t m = 0; m < N; ++m)
-    {
-        uint32_t x, y;
-        morton2D_d2xy(m, &x, &y);
-        sum += get_idx_weight_2d(weights, size_x, (int64_t)x, (int64_t)y);
-
-        Laik_Range ra = {
-            .space = space,
-            .from = {{x, y, 0}},
-            .to = {{x + 1, y + 1, 0}}};
-        laik_append_range(r, task, &ra, 0, 0);
-
-        // target reached -> merge task cells into larger rectangles and flush buffer
-        if (sum >= target)
-        {
-            task++;
-            sum = 0.0;
-        }
-    }
-
-    laik_svg_profiler_exit(inst, __func__);
-}
 
 void runHilbertPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams *p)
 {
@@ -398,16 +317,15 @@ void runHilbertPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams *p)
             Laik_Range ra = {.space = space,
                              .from = {{re->x, re->y, 0}},
                              .to = {{(re->x) + (re->w), (re->y) + (re->h), 0}}};
+            if (laik_myid(p->group) == 0)
+            {
+                printf("T%d adding range: [%ld,%ld]->(%ld,%ld)\n", tid, ra.from.i[0], ra.from.i[1], ra.to.i[0], ra.to.i[1]);
+            }
             laik_append_range(r, tid, &ra, 0, 0);
         }
     }
 
     laik_svg_profiler_exit(inst, __func__);
-}
-
-Laik_Partitioner *laik_new_morton_partitioner(double *weights)
-{
-    return laik_new_partitioner("morton", runMortonPartitioner, (void *)weights, 0);
 }
 
 Laik_Partitioner *laik_new_hilbert_partitioner(double *weights)
@@ -768,9 +686,6 @@ Laik_Partitioning *laik_lb_balance(Laik_LBState state, Laik_Partitioning *partit
     {
     case LB_RCB:
         nparter = laik_new_rcb_partitioner(weights);
-        break;
-    case LB_MORTON:
-        nparter = laik_new_morton_partitioner(weights);
         break;
     case LB_HILBERT:
         nparter = laik_new_hilbert_partitioner(weights);
