@@ -13,3 +13,4 @@ compile_commands.json
 *.so.dSYM/
 todo.txt
 /messungen/
+*core*
