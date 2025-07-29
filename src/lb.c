@@ -317,10 +317,6 @@ void runHilbertPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams *p)
             Laik_Range ra = {.space = space,
                              .from = {{re->x, re->y, 0}},
                              .to = {{(re->x) + (re->w), (re->y) + (re->h), 0}}};
-            if (laik_myid(p->group) == 0)
-            {
-                printf("T%d adding range: [%ld,%ld]->(%ld,%ld)\n", tid, ra.from.i[0], ra.from.i[1], ra.to.i[0], ra.to.i[1]);
-            }
             laik_append_range(r, tid, &ra, 0, 0);
         }
     }
