@@ -7,6 +7,8 @@
 #include <string.h>
 #include <unistd.h>
 
+#define IDX(x, y) ((y) * width + (x))
+
 //////////////////////
 // helper functions //
 //////////////////////
@@ -104,40 +106,6 @@ static double get_idx_weight_2d(double *weights, int64_t size_x, int64_t x, int6
 // merging cells //
 ///////////////////
 
-// rectangle used for merging calculations
-typedef struct
-{
-    int64_t x, y; // bottom left
-    int64_t w, h; // width, height
-} LBRect;
-
-// list of rectangles
-typedef struct
-{
-    LBRect *rects; // dynamically‑allocated array
-    int count;     // in use
-    int capacity;  // allocated
-} LBRectList;
-
-// helper function called once per task to set up an empty rectangle list
-static void init_rect_list(LBRectList *rl)
-{
-    rl->capacity = 16;
-    rl->count = 0;
-    rl->rects = (LBRect *)safe_malloc(rl->capacity * sizeof(LBRect));
-}
-
-// helper function to dynamically grow rectangle list
-static void append_rect(LBRectList *rl, LBRect r)
-{
-    if (rl->count == rl->capacity)
-    {
-        rl->capacity *= 2;
-        rl->rects = (LBRect *)safe_realloc(rl->rects, rl->capacity * sizeof(LBRect));
-    }
-    rl->rects[rl->count++] = r;
-}
-
 // helper function to merge singular indices into large rectangles
 //
 // this function takes as input a "map" of each index in the original index space to its corresponding task id
@@ -155,16 +123,12 @@ static void append_rect(LBRectList *rl, LBRect r)
 // done
 //
 // there's probably better ways of doing this, especially for hilbert curves (quadtrees), but this should be versatile enough to work with various algorithms
-static void merge_rects(int *grid1D, int width, int height, LBRectList *out, int tidcount)
+static void merge_rects(int *grid1D, int width, int height, Laik_RangeReceiver *r, int tidcount)
 {
-#define IDX(x, y) ((y) * width + (x))
     for (int tid = 0; tid < tidcount; ++tid)
     {
-        LBRectList *rl = &out[tid];
-        rl->count = 0;
-
         // keep carving until no more cells are found for this task
-        while (1)
+        for (;;)
         {
             int found = 0, x0 = 0, y0 = 0;
 
@@ -219,7 +183,7 @@ static void merge_rects(int *grid1D, int width, int height, LBRectList *out, int
             }
 
             // record the rectangle using best_w and best_h
-            append_rect(rl, (LBRect){x0, y0, best_w, best_h});
+            laik_append_range(r, tid, &(Laik_Range){.space = r->list->space, .from = {{x0, y0, 0}}, .to = {{x0 + best_w, y0 + best_h, 0}}}, 0, 0);
 
             // mark covered cells “used” by setting them to -1
             for (int dy = 0; dy < best_h; ++dy)
@@ -299,16 +263,14 @@ void runHilbertPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams *p)
     int64_t size_y = range.to.i[1] - range.from.i[1];
     assert(size_x > 0 && size_y > 0 && size_x == size_y && is_power_of_two(size_x) && is_power_of_two(size_y));
 
-    // compute total weight
+    // compute total weight (d2xy not needed here, since traversal order doesn't matter)
     int b = (int)log2(size_x); // side length 2^b
     uint64_t N = size_x * size_y;
     double total_w = 0.0;
-    for (uint64_t m = 0; m < N; ++m)
-    {
-        uint32_t x, y;
-        hilbert_d2xy(b, m, &x, &y);
-        total_w += get_idx_weight_2d(weights, size_x, (int64_t)x, (int64_t)y);
-    }
+
+    for (int64_t y = 0; y < size_y; ++y)
+        for (int64_t x = 0; x < size_x; ++x)
+            total_w += get_idx_weight_2d(weights, size_x, x, y);
 
     // define variables for distributing chunks evenly based on weight across all tasks
     double target = total_w / (double)tidcount;
@@ -340,31 +302,9 @@ void runHilbertPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams *p)
 
     // decompose (destroy) idxgrid into axis-aligned rectangles
     // each task has its own dynamic list of rectangles (soon-to-be ranges)
-    LBRectList *out = (LBRectList *)safe_malloc(tidcount * sizeof(LBRectList));
-    for (int tid = 0; tid < tidcount; ++tid)
-    {
-        init_rect_list(&out[tid]);
-    }
-    merge_rects(idxGrid, size_x, size_y, out, tidcount);
-
-    // pass merged rectangles as ranges to range receiver
-    for (int tid = 0; tid < tidcount; ++tid)
-    {
-        for (int i = 0; i < out[tid].count; ++i)
-        {
-            LBRect *re = &out[tid].rects[i];
-            laik_append_range(r, tid,
-                              &(Laik_Range){.space = space,
-                                            .from = {{re->x, re->y, 0}},
-                                            .to = {{re->x + re->w, re->y + re->h, 0}}},
-                              0, 0);
-        }
-        // won't be needing this anymore...
-        free(out[tid].rects);
-    }
+    merge_rects(idxGrid, size_x, size_y, r, tidcount);
 
     // free remaining memory
-    free(out);
     free(idxGrid);
     laik_svg_profiler_exit(inst, __func__);
 }
