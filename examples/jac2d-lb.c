@@ -34,10 +34,10 @@
 #define SUM 1
 
 #define SIZE 1024
-#define MAXITER 100
+#define MAXITER 10
 #define RES_ITER 10
 #define WL_LB_ITER 5
-#define LB_ALGO LB_RCB
+#define LB_ALGO LB_HILBERT
 
 #define FILENAME "lbviz/array_data.txt"
 // #define DO_VISUALIZATION
@@ -112,11 +112,12 @@ static void save_trace()
 #define DO_WORKLOAD(_iter)                                                       \
     /* iter: current iteration inside loop */                                    \
     /* pWrite: pointer to write partition */                                     \
+    /* r: current range index */                                                 \
     if ((_iter == 0) || (iter < _iter))                                          \
     {                                                                            \
         int64_t globFromX, globToX, globFromY, globToY;                          \
-        laik_my_range_2d(pWrite, 0, &globFromX, &globToX, &globFromY, &globToY); \
-        int itercount = (globFromX + x) * (globFromY + y) / 5000;                \
+        laik_my_range_2d(pWrite, r, &globFromX, &globToX, &globFromY, &globToY); \
+        int itercount = (globFromX + x) * (globFromY + y) / 4000;                \
         volatile double sink = 0.0; /* volatile to prevent optimizing out */     \
         for (int k = 0; k < itercount; ++k)                                      \
             sink += baseR[y * ystrideR + x] * 0.0 + k * 1e-9;                    \
@@ -152,19 +153,19 @@ double loRowValue = -5.0, hiRowValue = 10.0;
 double loColValue = -10.0, hiColValue = 5.0;
 
 // update boundary values
-void setBoundary(int size, Laik_Partitioning *pWrite, Laik_Data *dWrite)
+void setBoundary(int size, Laik_Partitioning *pWrite, Laik_Data *dWrite, int rangeNo)
 {
     double *baseW;
     uint64_t ysizeW, ystrideW, xsizeW;
     int64_t gx1, gx2, gy1, gy2;
 
     // global index ranges of the range of this process
-    laik_my_range_2d(pWrite, 0, &gx1, &gx2, &gy1, &gy2);
+    laik_my_range_2d(pWrite, rangeNo, &gx1, &gx2, &gy1, &gy2);
 
     // default mapping order for 2d:
     //   with y in [0;ysize[, x in [0;xsize[
     //   base[y][x] is at (base + y * ystride + x)
-    laik_get_map_2d(dWrite, 0, (void **)&baseW, &ysizeW, &ystrideW, &xsizeW);
+    laik_get_map_2d(dWrite, rangeNo, (void **)&baseW, &ysizeW, &ystrideW, &xsizeW);
 
     // set fixed boundary values at the 4 edges
     if (gy1 == 0)
@@ -220,8 +221,8 @@ int main(int argc, char *argv[])
 
     if (myid == 0)
     {
-        printf("%d x %d cells (mem %.1f MB), running %d iterations with %d tasks",
-               size, size, .000016 * size * size, maxiter, laik_size(world));
+        printf("%d x %d cells (mem %.1f MB), running %d iterations with %d tasks using %s",
+               size, size, .000016 * size * size, maxiter, laik_size(world), laik_get_lb_algorithm_name(LB_ALGO));
         if (!use_cornerhalo)
             printf(" (halo without corners)");
         printf("\n");
@@ -288,7 +289,7 @@ int main(int argc, char *argv[])
         for (uint64_t x = 0; x < xsizeW; x++)
             baseW[y * ystrideW + x] = (double)((gx1 + x + gy1 + y) & 6);
 
-    setBoundary(size, pWrite, dWrite);
+    setBoundary(size, pWrite, dWrite, 0);
     laik_log(2, "Init done\n");
 
     // for statistics (with LAIK_LOG=2)
@@ -299,6 +300,8 @@ int main(int argc, char *argv[])
     laik_svg_profiler_enter(inst, __func__);
 
     int iter = 0;
+
+    // begin iterations
     for (; iter < maxiter; iter++)
     {
         laik_set_iteration(inst, iter + 1);
@@ -318,59 +321,79 @@ int main(int argc, char *argv[])
         laik_switchto_partitioning(dRead, pRead, LAIK_DF_Preserve, LAIK_RO_None);
         laik_switchto_partitioning(dWrite, pWrite, LAIK_DF_None, LAIK_RO_None);
 
-        laik_get_map_2d(dRead, 0, (void **)&baseR, &ysizeR, &ystrideR, &xsizeR);
-        laik_get_map_2d(dWrite, 0, (void **)&baseW, &ysizeW, &ystrideW, &xsizeW);
+        double newValue, diff, res = 0.0;
+        bool resCond = ((iter % RES_ITER) == 0) && (iter >= RES_ITER);
 
-        setBoundary(size, pWrite, dWrite);
+        // set beforehand as a safety precaution, can also be moved inside main loop
+        for (int r = 0; r < laik_my_rangecount(pWrite); ++r)
+            setBoundary(size, pWrite, dWrite, r);
 
-        // local range for which to do 2d stencil, without global edges
-        laik_my_range_2d(pWrite, 0, &gx1, &gx2, &gy1, &gy2);
-        y1 = (gy1 == 0) ? 1 : 0;
-        x1 = (gx1 == 0) ? 1 : 0;
-        y2 = (gy2 == size) ? (ysizeW - 1) : ysizeW;
-        x2 = (gx2 == size) ? (xsizeW - 1) : xsizeW;
-
-        // relocate baseR to be able to use same indexing as with baseW
-        if (gx1 > 0)
+        // loop through all ranges / mappings (should be 1:1)
+        for (int r = 0; r < laik_my_rangecount(pWrite); ++r)
         {
-            // ghost cells from left neighbor at x=0, move that to -1
-            baseR++;
-        }
-        if (gy1 > 0)
-        {
-            // ghost cells from top neighbor at y=0, move that to -1
-            baseR += ystrideR;
-        }
+            laik_get_map_2d(dRead, r, (void **)&baseR, &ysizeR, &ystrideR, &xsizeR);
+            laik_get_map_2d(dWrite, r, (void **)&baseW, &ysizeW, &ystrideW, &xsizeW);
 
-        ///////////////
-        // do jacobi //
-        ///////////////
+            // local range for which to do 2d stencil, without global edges
+            laik_my_range_2d(pWrite, r, &gx1, &gx2, &gy1, &gy2);
 
-        // check for residuum every RES_ITER iterations
-        if (((iter % RES_ITER) == 0) && (iter >= RES_ITER))
-        {
-            laik_lb_balance(START_LB_SEGMENT, 0, 0);
+            y1 = (gy1 == 0) ? 1 : 0;
+            x1 = (gx1 == 0) ? 1 : 0;
+            y2 = (gy2 == size) ? (ysizeW - 1) : ysizeW;
+            x2 = (gx2 == size) ? (xsizeW - 1) : xsizeW;
 
-            double newValue, diff, res;
-            res = 0.0;
+            // relocate baseR to be able to use same indexing as with baseW
+            if (gx1 > 0)
+            {
+                // ghost cells from left neighbor at x=0, move that to -1
+                baseR++;
+            }
+            if (gy1 > 0)
+            {
+                // ghost cells from top neighbor at y=0, move that to -1
+                baseR += ystrideR;
+            }
+
+            ///////////////
+            // do jacobi //
+            ///////////////
+
+            // start load balancing only for the first range to avoid restarting timer for each new range
+            if (r == 0)
+                laik_lb_balance(START_LB_SEGMENT, 0, 0);
+
             for (int64_t y = y1; y < y2; y++)
             {
                 for (int64_t x = x1; x < x2; x++)
                 {
-                    newValue = 0.25 * (baseR[(y - 1) * ystrideR + x] +
-                                       baseR[y * ystrideR + x - 1] +
-                                       baseR[y * ystrideR + x + 1] +
-                                       baseR[(y + 1) * ystrideR + x]);
-                    diff = baseR[y * ystrideR + x] - newValue;
-                    res += diff * diff;
+                    double below = baseR[(y - 1) * ystrideR + x];
+                    double left = baseR[y * ystrideR + x - 1];
+                    double right = baseR[y * ystrideR + x + 1];
+                    double above = baseR[(y + 1) * ystrideR + x];
+
+                    newValue = 0.25 * (below + left + right + above);
+                    // printf("newVal = 0.25 * (%.1f + %.1f + %.1f + %.1f) = %.1f\n", below, left, right, above, newValue);
+                    // fflush(stdout);
+
+                    // for calculating the residual, accumulate it for all ranges
+                    if (resCond)
+                    {
+                        diff = baseR[y * ystrideR + x] - newValue;
+                        res += diff * diff;
+                    }
+
+                    // do some artificial workload to simulate load
                     DO_WORKLOAD(WL_LB_ITER);
                     baseW[y * ystrideW + x] = newValue;
                 }
             }
-            _res_iters++;
+        } // end ranges / mappings loop
 
-            LOAD_BALANCE(WL_LB_ITER); // load balancing has to be performed before aggregated sum, otherwise the times are incorrect (because of the sum barrier)
+        LOAD_BALANCE(WL_LB_ITER);
 
+        // do residual calculation on the proper iteration
+        if (resCond)
+        {
             // calculate global residuum
             laik_switchto_flow(sumD, LAIK_DF_None, LAIK_RO_None);
             laik_get_map_1d(sumD, 0, (void **)&sumPtr, 0);
@@ -397,34 +420,12 @@ int main(int argc, char *argv[])
             }
 
             if (laik_myid(laik_data_get_group(sumD)) == 0)
-            {
                 printf("Residuum after %2d iters: %f\n", iter + 1, res);
-            }
 
             if (res < .001)
                 break;
-        }
-        else
-        {
-            laik_lb_balance(START_LB_SEGMENT, 0, 0);
-
-            double newValue;
-            for (int64_t y = y1; y < y2; y++)
-            {
-                for (int64_t x = x1; x < x2; x++)
-                {
-                    newValue = 0.25 * (baseR[(y - 1) * ystrideR + x] +
-                                       baseR[y * ystrideR + x - 1] +
-                                       baseR[y * ystrideR + x + 1] +
-                                       baseR[(y + 1) * ystrideR + x]);
-                    DO_WORKLOAD(WL_LB_ITER);
-                    baseW[y * ystrideW + x] = newValue;
-                }
-            }
-            
-            LOAD_BALANCE(WL_LB_ITER);
-        }
-    }
+        } // end residual calculation
+    } // end iterations
 
     // statistics for all iterations and reductions
     // using work load in all tasks
@@ -458,8 +459,8 @@ int main(int argc, char *argv[])
             for (uint64_t y = 0; y < ysizeW; y++)
                 for (uint64_t x = 0; x < xsizeW; x++)
                     sum += baseW[y * ystrideW + x];
-            printf("Global value sum after %d iterations: %f\n",
-                   iter, sum);
+
+            printf("Global value sum after %d iterations: %f\n", iter, sum);
         }
     }
 

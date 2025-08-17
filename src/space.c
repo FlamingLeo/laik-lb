@@ -1331,6 +1331,113 @@ void calcAddReductions(int tflags,
 
 static int trans_id = 0;
 
+// comparators to ensure all mappings are sorted equally for all processes for transitionings
+static int compare_range_1d(const Laik_Range *a, const Laik_Range *b)
+{
+    if (a->from.i[0] < b->from.i[0]) return -1;
+    if (a->from.i[0] > b->from.i[0]) return  1;
+
+    if (a->to.i[0]   < b->to.i[0])   return -1;
+    if (a->to.i[0]   > b->to.i[0])   return  1;
+
+    return 0;
+}
+
+static int compare_range_2d(const Laik_Range *a, const Laik_Range *b)
+{
+    if (a->from.i[0] < b->from.i[0]) return -1;
+    if (a->from.i[0] > b->from.i[0]) return  1;
+
+    if (a->from.i[1] < b->from.i[1]) return -1;
+    if (a->from.i[1] > b->from.i[1]) return  1;
+
+    if (a->to.i[0]   < b->to.i[0])   return -1;
+    if (a->to.i[0]   > b->to.i[0])   return  1;
+
+    if (a->to.i[1]   < b->to.i[1])   return -1;
+    if (a->to.i[1]   > b->to.i[1])   return  1;
+
+    return 0;
+}
+
+static int compare_range_3d(const Laik_Range *a, const Laik_Range *b)
+{
+    if (a->from.i[0] < b->from.i[0]) return -1;
+    if (a->from.i[0] > b->from.i[0]) return  1;
+
+    if (a->from.i[1] < b->from.i[1]) return -1;
+    if (a->from.i[1] > b->from.i[1]) return  1;
+
+    if (a->from.i[2] < b->from.i[2]) return -1;
+    if (a->from.i[2] > b->from.i[2]) return  1;
+
+    if (a->to.i[0]   < b->to.i[0])   return -1;
+    if (a->to.i[0]   > b->to.i[0])   return  1;
+
+    if (a->to.i[1]   < b->to.i[1])   return -1;
+    if (a->to.i[1]   > b->to.i[1])   return  1;
+
+    if (a->to.i[2]   < b->to.i[2])   return -1;
+    if (a->to.i[2]   > b->to.i[2])   return  1;
+
+    return 0;
+}
+
+// sendTOp: primary key = toTask, then range coords, then mapNo, then rangeNo
+// note: this assumes equal space sizes for both structs (tasks)
+int cmp_send_ops(const void *pa, const void *pb)
+{
+    const struct sendTOp *a = (const struct sendTOp*)pa;
+    const struct sendTOp *b = (const struct sendTOp*)pb;
+
+    if (a->toTask < b->toTask) return -1;
+    if (a->toTask > b->toTask) return  1;
+
+    int r, dims = a->range.space->dims;
+
+    if(dims == 1)      r = compare_range_1d(&a->range, &b->range);
+    else if(dims == 2) r = compare_range_2d(&a->range, &b->range);
+    else               r = compare_range_3d(&a->range, &b->range);
+
+    if (r) return r;
+
+    if (a->mapNo < b->mapNo) return -1;
+    if (a->mapNo > b->mapNo) return  1;
+
+    if (a->rangeNo < b->rangeNo) return -1;
+    if (a->rangeNo > b->rangeNo) return  1;
+
+    return 0;
+}
+
+// recvTOp: primary key = fromTask, then range coords, then mapNo, then rangeNo
+// note: this assumes equal space sizes for both structs (tasks)
+int cmp_recv_ops(const void *pa, const void *pb)
+{
+    const struct recvTOp *a = (const struct recvTOp*)pa;
+    const struct recvTOp *b = (const struct recvTOp*)pb;
+
+    if (a->fromTask < b->fromTask) return -1;
+    if (a->fromTask > b->fromTask) return  1;
+
+    int r, dims = a->range.space->dims;
+
+    if(dims == 1)      r = compare_range_1d(&a->range, &b->range);
+    else if(dims == 2) r = compare_range_2d(&a->range, &b->range);
+    else               r = compare_range_3d(&a->range, &b->range);
+    
+    if (r) return r;
+
+
+    if (a->mapNo < b->mapNo) return -1;
+    if (a->mapNo > b->mapNo) return  1;
+
+    if (a->rangeNo < b->rangeNo) return -1;
+    if (a->rangeNo > b->rangeNo) return  1;
+
+    return 0;
+}
+
 // Calculate communication required for transitioning between partitionings
 Laik_Transition*
 do_calc_transition(Laik_Space* space,
@@ -1545,6 +1652,10 @@ do_calc_transition(Laik_Space* space,
             }
         }
     }
+
+    // sort buffers to ensure common ordering of transitionings
+    if (sendBufCount > 1) qsort(sendBuf, sendBufCount, sizeof(sendBuf[0]), cmp_send_ops);
+    if (recvBufCount > 1) qsort(recvBuf, recvBufCount, sizeof(recvBuf[0]), cmp_recv_ops);
 
     // allocate space as needed
     int localSize = localBufCount * sizeof(struct localTOp);

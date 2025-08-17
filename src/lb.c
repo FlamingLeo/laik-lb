@@ -331,8 +331,9 @@ void runHilbertPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams *p)
         // target reached -> merge task cells into larger rectangles and flush buffer
         if (sum >= target)
         {
-            // reset for next task
-            task++;
+            // reset for next task (cap to last index)
+            if (task < tidcount - 1)
+                task++;
             sum = 0.0;
         }
     }
