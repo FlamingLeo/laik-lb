@@ -47,17 +47,12 @@ Laik_Partitioner *laik_new_rcb_partitioner(double *weights);
 // load balancing //
 ////////////////////
 
-// collect weights into a designated array
-//
-// the size of the array is the size of the laik space
-// each index in this array corresponds to the element's weight
-//
-// this uses the aggregation functionality shown in the 1d vector sum example
-//
-// returns null if it's the first iteration or a pointer to the weight array otherwise
-double* laik_lb_measure(Laik_Partitioning *group, double ttime);
-
 // create and return new partitioning based on time measurements using an input-chosen load balancing algorithm
 //
-// TODO: disable balancing under a certain threshold
+// when under a specific stopping threshold for a certain number of consecutive runs, load balancing stops
+// when over a specific starting thershold for a certain number of consecutive runs, load balancing restarts
+// two thresholds were chosen alongside patience counters to avoid oscillation
+//
+// returns null for the starting call, the same partitioning if nothing was changed (do not free this if you intend on using it afterwards!)
+// or a different partitioning if something changed
 Laik_Partitioning *laik_lb_balance(Laik_LBState state, Laik_Partitioning *partitioning, Laik_LBAlgorithm algorithm /*, double threshold*/);

@@ -271,7 +271,7 @@ int main(int argc, char *argv[])
     // optional space size and loop count arguments
     int64_t sidelen = 1024;
     int64_t spsize = sidelen * sidelen; // space size (sidelen^2)
-    int lcount = 5;                     // loop count
+    int lcount = 10;                    // loop count
     if (argc > 2)
         spsize = atoi(argv[2]);
     if (argc > 3)

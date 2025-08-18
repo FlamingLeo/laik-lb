@@ -13,33 +13,37 @@
 // helper functions //
 //////////////////////
 
-// difference between the minimum and maximum of the times taken by each task
-static double min_max_difference(double *weights, int64_t size, int gsize)
+// calculate the difference between the minimum and maximum of the times taken by each task and the mean
+//
+// this is used for determining whether to start or stop load balancing
+static void min_max_mean(double *times, int gsize, double *maxdt, double *mean)
 {
-    assert(size > 0);
-    double max = weights[size];
-    double min = weights[size];
-    for (int64_t i = size + 1; i < size + gsize; i++)
+    double min = times[0], max = times[0], sum = times[0];
+    for (int64_t i = 1; i < gsize; i++)
     {
-        if (weights[i] > max)
-            max = weights[i];
-        if (weights[i] < min)
-            min = weights[i];
+        if (times[i] > max)
+            max = times[i];
+        if (times[i] < min)
+            min = times[i];
+        sum += times[i];
     }
-    return max - min;
+    if (maxdt)
+        *maxdt = max - min;
+    if (mean)
+        *mean = sum / (double)gsize;
 }
 
 // print times (elements in weight array starting at offset size) since last rebalance
-static void print_times(double *weights, int64_t size, int gsize)
+static void print_times(double *times, int gsize, double maxdt, double mean)
 {
-    printf("[LB] times in s since last rebalance: [");
-    for (int64_t i = size; i < size + gsize; ++i)
+    printf("[LAIK-LB] times in s since first call: [");
+    for (int i = 0; i < gsize; ++i)
     {
-        printf("%.2f", weights[i]);
-        if (i < size + gsize - 1)
+        printf("%.2f", times[i]);
+        if (i < gsize - 1)
             printf(", ");
     }
-    printf("], max dt: %.2f\n", min_max_difference(weights, size, gsize));
+    printf("], max dt: %.2f, mean %.2f, rel. imbalance %.2f\n", maxdt, mean, maxdt / mean);
 }
 
 // check if a number is a power of 2
@@ -55,18 +59,6 @@ static void *safe_malloc(size_t n)
     if (!p)
     {
         laik_panic("Could not allocate enough memory!");
-        exit(EXIT_FAILURE);
-    }
-    return p;
-}
-
-// safely reallocate memory or panic on failure
-static void *safe_realloc(void *ptr, size_t n)
-{
-    void *p = realloc(ptr, n);
-    if (!p)
-    {
-        laik_panic("Could not reallocate enough memory!");
         exit(EXIT_FAILURE);
     }
     return p;
@@ -187,12 +179,8 @@ static void merge_rects(int *grid1D, int width, int height, Laik_RangeReceiver *
 
             // mark covered cells “used” by setting them to -1
             for (int dy = 0; dy < best_h; ++dy)
-            {
                 for (int dx = 0; dx < best_w; ++dx)
-                {
                     grid1D[IDX(x0 + dx, y0 + dy)] = -1;
-                }
-            }
         }
     }
 }
@@ -280,7 +268,8 @@ void runHilbertPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams *p)
     // allocate index-to-task mapping array
     int *idxGrid = (int *)safe_malloc(N * sizeof(int));
 
-    laik_log(1, "size %ld, totalw %f, targetw %f for %d procs\n", N, total_w, target, tidcount);
+    laik_log(1, "lb/hilbert: allocated %ld bytes (%f kB) for index grid\n", N * sizeof(int), .001 * N * sizeof(int));
+    laik_log(1, "lb/hilbert: size %ld, totalw %f, targetw %f for %d procs\n", N, total_w, target, tidcount);
 
     // scan hilbert curve and partition based on prefix sum
     for (uint64_t m = 0; m < N; ++m)
@@ -293,6 +282,8 @@ void runHilbertPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams *p)
         // target reached -> merge task cells into larger rectangles and flush buffer
         if (sum >= target)
         {
+            laik_log(1, "lb/hikbert: found split at [x:%d,y:%d] for task %d (sum: %f, target %f)\n", x, y, task, sum, target);
+
             // reset for next task (cap to last index)
             if (task < tidcount - 1)
                 task++;
@@ -354,7 +345,7 @@ static void rcb_1d(Laik_RangeReceiver *r, Laik_Range *range, int fromTask, int t
     // calculate target weight of left child
     double ltarget = totalW * ((double)lcount / count);
 
-    laik_log(1, "[rcb1d] [T%d-T%d) [%ld-%ld) count: %d, lcount: %d, rcount: %d, tmid: %d, totalW: %f, ltarget: %f\n", fromTask, toTask, from, to, count, lcount, rcount, tmid, totalW, ltarget);
+    laik_log(1, "lb/rcb_1d: [T%d-T%d) [%ld-%ld) count: %d, lcount: %d, rcount: %d, tmid: %d, totalW: %f, ltarget: %f\n", fromTask, toTask, from, to, count, lcount, rcount, tmid, totalW, ltarget);
 
     // find first index where prefix sum exceeds target weight
     double sum = 0.0;
@@ -429,7 +420,7 @@ static void rcb_2d(Laik_RangeReceiver *r, Laik_Range *range, int fromTask, int t
 
     double ltarget = totalW * ((double)lcount / count);
 
-    laik_log(1, "[rcb2d] [T%d-T%d) [%ld, %ld] -> (%ld, %ld), count: %d, lcount: %d, rcount: %d, tmid: %d, totalW: %f, ltarget: %f, axis: %d\n", fromTask, toTask, from_x, from_y, to_x, to_y, count, lcount, rcount, tmid, totalW, ltarget, axis);
+    laik_log(1, "lb/rcb_2d: [T%d-T%d) [%ld, %ld] -> (%ld, %ld), count: %d, lcount: %d, rcount: %d, tmid: %d, totalW: %f, ltarget: %f, axis: %d\n", fromTask, toTask, from_x, from_y, to_x, to_y, count, lcount, rcount, tmid, totalW, ltarget, axis);
 
     // accumulate weights along splitting axis and find first index where prefix sum exceeds target weight
     double sum = 0.0;
@@ -451,7 +442,7 @@ static void rcb_2d(Laik_RangeReceiver *r, Laik_Range *range, int fromTask, int t
             if (sum >= ltarget)
             {
                 split_y = y;
-                laik_log(1, "[rcb2d] found horizontal split at y = %ld (sum: %f)\n", y, sum);
+                laik_log(1, "lb/rcb_2d: found horizontal split at y = %ld (sum: %f)\n", y, sum);
                 break;
             }
         }
@@ -471,7 +462,7 @@ static void rcb_2d(Laik_RangeReceiver *r, Laik_Range *range, int fromTask, int t
             if (sum >= ltarget)
             {
                 split_x = x;
-                laik_log(1, "[rcb2d] found vertical split at x = %ld (sum: %f)\n", x, sum);
+                laik_log(1, "lb/rcb_2d: found vertical split at x = %ld (sum: %f)\n", x, sum);
                 break;
             }
         }
@@ -489,7 +480,7 @@ static void rcb_2d(Laik_RangeReceiver *r, Laik_Range *range, int fromTask, int t
         r1.to.i[0] = split_x;
         r2.from.i[0] = split_x;
     }
-    laik_log(1, "[rcb2d] split_x: %ld, split_y : %ld, r1: [%ld, %ld] -> (%ld, %ld); r2: [%ld, %ld] -> (%ld, %ld)\n", split_x, split_y, r1.from.i[0], r1.from.i[1], r1.to.i[0], r1.to.i[1], r2.from.i[0], r2.from.i[1], r2.to.i[0], r2.to.i[1]);
+    laik_log(1, "lb/rcb_2d: split_x: %ld, split_y : %ld, r1: [%ld, %ld] -> (%ld, %ld); r2: [%ld, %ld] -> (%ld, %ld)\n", split_x, split_y, r1.from.i[0], r1.from.i[1], r1.to.i[0], r1.to.i[1], r2.from.i[0], r2.from.i[1], r2.to.i[0], r2.to.i[1]);
     rcb_2d(r, &r1, fromTask, tmid, weights);
     rcb_2d(r, &r2, tmid + 1, toTask, weights);
     laik_svg_profiler_exit(inst, __func__);
@@ -528,7 +519,70 @@ Laik_Partitioner *laik_new_rcb_partitioner(double *weights)
 // load balancing //
 ////////////////////
 
-double *laik_lb_measure(Laik_Partitioning *p, double ttime)
+// calculate the imbalance to determine whether or not load balancing should be done
+//
+// TODO: consider moving average to smooth out possible noise (EMA)?
+// formula: (max - min) / mean
+static double get_imbalance(Laik_Partitioning *p, double ttime)
+{
+    Laik_Group *group = p->group;
+    Laik_Instance *inst = group->inst;
+    laik_svg_profiler_enter(inst, __func__);
+
+    int task = laik_myid(group);
+    int gsize = group->size;
+
+    // times will be stored in here
+    double times[gsize];
+    memset(times, 0, gsize * sizeof(double));
+
+    // store own time
+    times[task] = ttime;
+
+    // aggregate times
+    // initialize laik space for aggregating weights
+    Laik_Space *tspace;
+    Laik_Data *tdata;
+    Laik_Partitioning *tpart;
+
+    // use weights directly as input data
+    laik_log(1, "lb/get_imbalance: aggregating task times...\n");
+    tspace = laik_new_space_1d(inst, gsize);
+    tdata = laik_new_data(tspace, laik_Double);
+    tpart = laik_new_partitioning(laik_All, group, tspace, NULL);
+    laik_data_provide_memory(tdata, times, gsize * sizeof(double));
+    laik_set_initial_partitioning(tdata, tpart);
+
+    // collect times into weights, shared among all tasks
+    laik_switchto_partitioning(tdata, tpart, LAIK_DF_Preserve, LAIK_RO_Sum);
+
+    laik_log_begin(1);
+    laik_log_append("lb/get_imbalance: got times (task:time)");
+    for (int i = 0; i < gsize; ++i)
+        laik_log_append("   %d:%f", i, times[i]);
+    laik_log_flush("\n");
+
+    // calculate maximum time difference
+    double maxdt, mean;
+    min_max_mean(times, gsize, &maxdt, &mean);
+
+    laik_log(1, "lb/get_imbalance: maxdt %f, mean %f\n", maxdt, mean);
+
+    // print time taken by each task
+    if (task == 0)
+        print_times(times, gsize, maxdt, mean);
+
+    // free partitionings since we don't need them anymore
+    laik_free_partitioning(tpart);
+    laik_free_space(tspace);
+
+    // return relative threshold ((max - min) / mean)
+    laik_svg_profiler_exit(inst, __func__);
+    return maxdt / mean;
+}
+
+// initialize the weight array for the current load balancing run
+static double *init_weights(Laik_Partitioning *p, double ttime)
 {
     double *weights;
 
@@ -540,23 +594,20 @@ double *laik_lb_measure(Laik_Partitioning *p, double ttime)
     // allocate weight array and zero-initialize
     // for t tasks, the final t elements of the array are the raw times taken by each task (starting from 0, one after the last weight)
     int dims = p->space->dims;
-    int task = laik_myid(group);
-    int gsize = group->size;
     int64_t size_x = space->range.to.i[0] - space->range.from.i[0];
     int64_t size_y = dims >= 2 ? (space->range.to.i[1] - space->range.from.i[1]) : 1;
     int64_t size_z = dims >= 3 ? (space->range.to.i[2] - space->range.from.i[2]) : 1;
     int64_t size = size_x * size_y * size_z;
 
-    weights = (double *)safe_malloc(sizeof(double) * (size /* elements in index space */ + gsize /* number of tasks */));
-    memset(weights, 0, sizeof(double) * (size + gsize));
+    weights = (double *)safe_malloc(size * sizeof(double));
+    memset(weights, 0, size * sizeof(double));
 
-    // store time taken by own task
-    weights[size + task] = ttime;
+    laik_log(1, "lb/init_weights: initialized weight array of %ld bytes (%f kB) (dims: %d, size: %ldx%ldx%ld=%ld)\n", size * sizeof(double), .001 * size * sizeof(double), dims, size_x, size_y, size_z, size);
 
     // calculate weight and fill array at own indices
     // 1. accumulate number of items
     // 2. get task weight for task i as time_taken(i) * c / nitems(i), where c is some constant
-    int tnitems = 0;
+    int64_t tnitems = 0;
     int c = 1000000;
     for (int r = 0; r < laik_my_rangecount(p); ++r)
     {
@@ -565,6 +616,7 @@ double *laik_lb_measure(Laik_Partitioning *p, double ttime)
             int64_t from, to;
             laik_my_range_1d(p, r, &from, &to);
             tnitems += to - from;
+            laik_log(1, "lb/init_weights: [%ld]->(%ld), tnitems + %ld = %ld\n", from, to, to - from, tnitems);
         }
         else if (dims == 2)
         {
@@ -572,11 +624,13 @@ double *laik_lb_measure(Laik_Partitioning *p, double ttime)
             laik_my_range_2d(p, r, &from_x, &to_x, &from_y, &to_y);
             int64_t count = (to_x - from_x) * (to_y - from_y);
             tnitems += count;
+            laik_log(1, "lb/init_weights: [%ld,%ld]->(%ld,%ld), tnitems + %ld = %ld\n", from_x, from_y, to_x, to_y, count, tnitems);
         }
     };
 
     // broadcast weight to own indices
     double tweight = (ttime * (double)c) / (double)tnitems;
+    laik_log(1, "lb/init_weights: tweight = (%f * %d) / %ld = %f, broadcasting to own indices...\n", ttime, c, tnitems, tweight);
     for (int r = 0; r < laik_my_rangecount(p); ++r)
     {
         if (dims == 1)
@@ -584,80 +638,133 @@ double *laik_lb_measure(Laik_Partitioning *p, double ttime)
             int64_t from, to;
             laik_my_range_1d(p, r, &from, &to);
             for (int64_t i = from; i < to; ++i)
-            {
                 weights[i] = tweight;
-            }
         }
         else if (dims == 2)
         {
             int64_t from_x, from_y, to_x, to_y;
             laik_my_range_2d(p, r, &from_x, &to_x, &from_y, &to_y);
             for (int64_t x = from_x; x < to_x; ++x)
-            {
                 for (int64_t y = from_y; y < to_y; ++y)
-                {
                     weights[y * size_x + x] = tweight;
-                }
-            }
         }
     }
-
-    laik_log(1, "took %fs, nitems: %d, weight %f\n", ttime, tnitems, tweight);
 
     // initialize laik space for aggregating weights
     Laik_Space *weightspace;
     Laik_Data *weightdata;
-    Laik_Partitioning *weightpart1, *weightpart2;
+    Laik_Partitioning *weightpart;
 
     // use weights directly as input data
-    weightspace = laik_new_space_1d(inst, size + gsize);
+    laik_log(1, "lb/init_weights: aggregating weights...\n");
+
+    weightspace = laik_new_space_1d(inst, size);
     weightdata = laik_new_data(weightspace, laik_Double);
-    weightpart1 = laik_new_partitioning(laik_All, group, weightspace, NULL);
-    laik_data_provide_memory(weightdata, weights, (size + gsize) * sizeof(double));
-    laik_set_initial_partitioning(weightdata, weightpart1);
+    weightpart = laik_new_partitioning(laik_All, group, weightspace, NULL);
+    laik_data_provide_memory(weightdata, weights, size * sizeof(double));
+    laik_set_initial_partitioning(weightdata, weightpart);
 
     // collect times into weights, shared among all tasks
-    weightpart2 = laik_new_partitioning(laik_All, group, weightspace, NULL);
-    laik_switchto_partitioning(weightdata, weightpart2, LAIK_DF_Preserve, LAIK_RO_Sum);
-
-    // print time taken by each task
-    if (task == 0)
-    {
-        print_times(weights, size, gsize);
-    }
+    laik_switchto_partitioning(weightdata, weightpart, LAIK_DF_Preserve, LAIK_RO_Sum);
 
     // free partitionings since we don't need them anymore
-    laik_free_partitioning(weightpart1);
-    laik_free_partitioning(weightpart2);
+    laik_free_partitioning(weightpart);
     laik_free_space(weightspace);
 
     laik_svg_profiler_exit(inst, __func__);
     return weights;
 }
 
-Laik_Partitioning *laik_lb_balance(Laik_LBState state, Laik_Partitioning *partitioning, Laik_LBAlgorithm algorithm /*, double threshold*/)
+// TODO: consider metric where overhead for sending data outweighs possible gains by load balancing, and if this is even necessary / good
+Laik_Partitioning *laik_lb_balance(Laik_LBState state, Laik_Partitioning *partitioning, Laik_LBAlgorithm algorithm)
 {
     static double time = 0;
+    static const int p_stop = 3;       // stopping patience
+    static const int p_start = 3;      // starting patience
+    static const double t_stop = 0.05; // stop load balancing when relative imbalance is UNDER this threshold for p_stop consecutive times
+    static const double t_start = 0.1; // restart load balancing when relative imbalance is OVER this threshold for p_start consecutive times
+    static bool stopped = false;
+    static int p_stopctr = 0;
+    static int p_startctr = 0;
+    static int segment = 0; // load balancing segment, for debugging purposes
+
+    assert(t_stop < t_start); // stopping threshold should be under starting threshold
 
     // when starting a new load balancing segment, start timer and do nothing else
     if (state == START_LB_SEGMENT)
     {
+        laik_log(1, "lb: starting new load balancing segment lb-%d (stopped? %d)\n", segment, stopped);
         time = laik_wtime();
         return NULL;
     }
 
-    // otherwise, stop timer and perform load balancing
+    // otherwise, stop timer and perform load balancing checks and algorithm
     Laik_Instance *inst = partitioning->group->inst;
     laik_svg_profiler_enter(inst, __func__);
 
-    Laik_Space *space = partitioning->space;
-    Laik_Group *group = partitioning->group;
+    laik_log_begin(1);
+    laik_log_append("lb: stopping load balancing segment lb-%d based on partitioning %s using algorithm %s after ", segment, partitioning->name, laik_get_lb_algorithm_name(algorithm));
+
+    // check relative imbalance to determine whether or not to perform load balancing
+    double ttime = laik_wtime() - time;
+    laik_log_append("%f seconds (stopped? %d)", ttime, stopped);
+    laik_log_flush("\n");
+
+    double imbal = get_imbalance(partitioning, ttime);
+
+    /* handle possibly consecutive runs over / under respective thresholds */
+    if (imbal < t_stop)
+    {
+        // imbalance BELOW STOPPING threshold: increment consecutive stopping runs and reset starting runs
+        p_stopctr++;
+        p_startctr = 0;
+        laik_log(1, "lb: relative imbalance %f < stopping threshold %f for %d consecutive runs (out of %d), reset start ctr!", imbal, t_stop, p_stopctr, p_stop);
+    }
+    else if (imbal > t_start)
+    {
+        // imbalance ABOVE STARTING threshold: increment consecutive starting runs and reset stopping runs
+        p_startctr++;
+        p_stopctr = 0;
+        laik_log(1, "lb: relative imbalance %f > starting threshold %f for %d consecutive runs (out of %d), reset stop ctr!", imbal, t_start, p_startctr, p_start);
+    }
+    else
+    {
+        // imbalance BETWEEN start and stop thresholds: keep state
+        p_stopctr = 0, p_startctr = 0;
+        laik_log(1, "lb: relative imbalance %f, ]stop: %f, start: %f[, no consecutive runs", imbal, t_stop, t_start);
+    }
+
+    /* start / stop load balancing based on consecutive runs */
+    if (!stopped && p_stopctr >= p_stop)
+    {
+        // stop load balancing for consecutive runs UNDER stopping threshold
+        stopped = true;
+        p_stopctr = 0, p_startctr = 0;
+        laik_log(1, "lb: relative imbalance %f < stopping threshold %f for %d consecutive runs (out of %d), LOAD BALANCING DISABLED! (counters reset)", imbal, t_stop, p_stopctr, p_stop);
+    }
+    if (stopped && p_startctr >= p_start)
+    {
+        // restart load balancing for consecutive runs OVER starting thresholds
+        stopped = false;
+        p_stopctr = 0, p_startctr = 0;
+        laik_log(1, "lb: relative imbalance %f > starting threshold %f for %d consecutive runs (out of %d), LOAD BALANCING REENABLED! (counters reset)", imbal, t_start, p_startctr, p_start);
+    }
+
+    // when not load balancing, return old partitioning unchanged (to be verified by caller!)
+    if (stopped)
+    {
+        laik_log(1, "lb: load balancing segment lb-%d currently INACTIVE, relative imbalance %f (t_stop %f, t_start %f), returning partitioning %s unchanged...\n", segment, imbal, t_stop, t_start, partitioning->name);
+        segment++;
+
+        laik_svg_profiler_exit(inst, __func__);
+        return partitioning;
+    }
 
     // collect weights associated for each task
-    double *weights = laik_lb_measure(partitioning, laik_wtime() - time);
+    double *weights = init_weights(partitioning, ttime);
+    assert(weights != NULL);
 
     // use task weights to create new partitioning
-    assert(weights != NULL);
     Laik_Partitioner *nparter;
 
     // choose load balancing algorithm based on input
@@ -675,8 +782,12 @@ Laik_Partitioning *laik_lb_balance(Laik_LBState state, Laik_Partitioning *partit
     }
 
     // create new partitioning to return and free weight array
-    Laik_Partitioning *npart = laik_new_partitioning(nparter, group, space, partitioning);
+    laik_log(1, "lb: creating new partitioning for load balancing segment lb-%d using other=%s", segment, partitioning->name);
+    Laik_Partitioning *npart = laik_new_partitioning(nparter, partitioning->group, partitioning->space, partitioning);
     free(weights);
+
+    laik_log(1, "lb: finished load balancing segment lb-%d, created new partitioning %s\n", segment, npart->name);
+    segment++;
 
     laik_svg_profiler_exit(inst, __func__);
     return npart;
