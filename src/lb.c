@@ -7,11 +7,23 @@
 #include <string.h>
 #include <unistd.h>
 
-#define IDX(x, y) ((y) * width + (x))
+#define IDX2D(x, y) ((y) * width + (x))
+#define IDX3D(x, y, z) ((x) + width * ((y) + height * (z)))
 
-//////////////////////
-// helper functions //
-//////////////////////
+// helper lookup table for fast log2 for powers of 2
+static const int log2_tab[64] = {
+    63, 0, 58, 1, 59, 47, 53, 2,
+    60, 39, 48, 27, 54, 33, 42, 3,
+    61, 51, 37, 40, 49, 18, 28, 20,
+    55, 30, 34, 11, 43, 14, 22, 4,
+    62, 57, 46, 52, 38, 26, 32, 41,
+    50, 36, 17, 19, 29, 10, 13, 21,
+    56, 45, 25, 31, 35, 16, 9, 12,
+    44, 24, 15, 8, 23, 7, 6, 5};
+
+//////////////////////////////
+// generic helper functions //
+//////////////////////////////
 
 // calculate the difference between the minimum and maximum of the times taken by each task and the mean
 //
@@ -50,6 +62,21 @@ static void print_times(double *times, int gsize, double maxdt, double mean)
 static bool is_power_of_two(int64_t x)
 {
     return (x != 0) && ((x & (x - 1)) == 0);
+}
+
+// compute log2 for a 64-bit integer power of 2 using bitops and a LUT (cross-platform, compiler-/intrinsic-independent)
+// source: https://stackoverflow.com/questions/11376288/fast-computing-of-log2-for-64-bit-integers
+static int log2_int(uint64_t value)
+{
+    assert(is_power_of_two(value));
+
+    value |= value >> 1;
+    value |= value >> 2;
+    value |= value >> 4;
+    value |= value >> 8;
+    value |= value >> 16;
+    value |= value >> 32;
+    return log2_tab[((uint64_t)((value - (value >> 1)) * 0x07EDD5E59A4E28C2)) >> 58];
 }
 
 // safely allocate memory or panic on failure
@@ -94,17 +121,27 @@ static double get_idx_weight_2d(double *weights, int64_t size_x, int64_t x, int6
     return weights[y * size_x + x];
 }
 
+// get range weight from index (3d)
+static double get_idx_weight_3d(double *weights, int64_t size_x, int64_t size_y, int64_t x, int64_t y, int64_t z)
+{
+    return weights[x + size_x * (y + size_y * z)];
+}
+
+// note regarding 3d: looking at preexisting LAIK examples, the dimensions are:
+//   x: width  (horizontal)
+//   y: height (vertical)
+//   z: depth  (slices)
+
 ///////////////////
 // merging cells //
 ///////////////////
 
-// helper function to merge singular indices into large rectangles
+// helper functions to merge singular indices into large rectangles
 //
 // this function takes as input a "map" of each index in the original index space to its corresponding task id
-// i.e. the value at coordinate y * size_x + x is the task to which this index belongs to
 //
 // for each task T:
-// |  create an empty list L_T of rectangles (ranges) for T
+// |  create an empty list L_T of rectangles / cuboid (ranges) for T
 // |  repeat until we've exhausted this task's cells:
 // |  |  find the bottom-leftmost cell belonging to T
 // |  |  from there, measure how far right we can go (along the x axis) until we reach the edge / a cell which doesn't belong to T anymore (max width)
@@ -115,25 +152,32 @@ static double get_idx_weight_2d(double *weights, int64_t size_x, int64_t x, int6
 // done
 //
 // there's probably better ways of doing this, especially for hilbert curves (quadtrees), but this should be versatile enough to work with various algorithms
-static void merge_rects(int *grid1D, int width, int height, Laik_RangeReceiver *r, int tidcount)
+// TODO: preprocessing to avoid multiple grid scans
+
+// merge rectangles (2d)
+static void merge_rects(int *grid1D, int64_t width, int64_t height, Laik_RangeReceiver *r, int tidcount)
 {
+    Laik_Instance *inst = r->list->space->inst;
+    laik_svg_profiler_enter(inst, __func__);
+
     for (int tid = 0; tid < tidcount; ++tid)
     {
         // keep carving until no more cells are found for this task
         for (;;)
         {
-            int found = 0, x0 = 0, y0 = 0;
+            bool found = false;
+            int64_t x0 = 0, y0 = 0;
 
             // find bottom‑leftmost cell == tid
-            for (int y = 0; y < height && !found; ++y)
+            for (int64_t y = 0; y < height && !found; ++y)
             {
-                for (int x = 0; x < width; ++x)
+                for (int64_t x = 0; x < width; ++x)
                 {
-                    if (grid1D[IDX(x, y)] == tid)
+                    if (grid1D[IDX2D(x, y)] == tid)
                     {
                         x0 = x;
                         y0 = y;
-                        found = 1;
+                        found = true;
                         break;
                     }
                 }
@@ -144,28 +188,27 @@ static void merge_rects(int *grid1D, int width, int height, Laik_RangeReceiver *
                 break;
 
             // scan right to get initial width
-            int w = 0;
-            while (x0 + w < width && grid1D[IDX(x0 + w, y0)] == tid)
+            int64_t w = 0;
+            while (x0 + w < width && grid1D[IDX2D(x0 + w, y0)] == tid)
                 ++w;
 
             // extend upward to maximize area
-            int best_area = w;
-            int best_w = w; // remember the width at which best_area occurs
-            int best_h = 1;
-            int curr_w = w;
+            int64_t best_area = w;
+            int64_t best_w = w; // remember the width at which best_area occurs
+            int64_t best_h = 1;
+            int64_t curr_w = w;
 
-            for (int h = 2; y0 + h <= height; ++h)
+            for (int64_t h = 2; y0 + h <= height; ++h)
             {
                 // measure run of tids in row y0 + h − 1
-                int w_h = 0;
-                while (x0 + w_h < width && grid1D[IDX(x0 + w_h, y0 + h - 1)] == tid)
+                int64_t w_h = 0;
+                while (x0 + w_h < width && grid1D[IDX2D(x0 + w_h, y0 + h - 1)] == tid)
                     ++w_h;
                 if (w_h == 0)
                     break;
-
                 if (w_h < curr_w)
                     curr_w = w_h;
-                int area = curr_w * h;
+                int64_t area = curr_w * h;
                 if (area > best_area)
                 {
                     best_area = area;
@@ -178,11 +221,149 @@ static void merge_rects(int *grid1D, int width, int height, Laik_RangeReceiver *
             laik_append_range(r, tid, &(Laik_Range){.space = r->list->space, .from = {{x0, y0, 0}}, .to = {{x0 + best_w, y0 + best_h, 0}}}, 0, 0);
 
             // mark covered cells “used” by setting them to -1
-            for (int dy = 0; dy < best_h; ++dy)
-                for (int dx = 0; dx < best_w; ++dx)
-                    grid1D[IDX(x0 + dx, y0 + dy)] = -1;
+            for (int64_t dy = 0; dy < best_h; ++dy)
+                for (int64_t dx = 0; dx < best_w; ++dx)
+                    grid1D[IDX2D(x0 + dx, y0 + dy)] = -1;
         }
     }
+
+    laik_svg_profiler_exit(inst, __func__);
+}
+
+// merge cuboids (3d, x: width, y: height, z: depth)
+static void merge_cuboids(int *grid1D, int64_t width, int64_t height, int64_t depth, Laik_RangeReceiver *r, int tidcount)
+{
+    Laik_Instance *inst = r->list->space->inst;
+    laik_svg_profiler_enter(inst, __func__);
+
+    for (int tid = 0; tid < tidcount; ++tid)
+    {
+        for (;;)
+        {
+            bool found = false;
+            int64_t x0 = 0, y0 = 0, z0 = 0;
+
+            // find bottom-front-leftmost smallest cell == tid
+            for (int64_t z = 0; z < depth && !found; ++z)
+            {
+                for (int64_t y = 0; y < height && !found; ++y)
+                {
+                    for (int64_t x = 0; x < width; ++x)
+                    {
+                        if (grid1D[IDX3D(x, y, z)] == tid)
+                        {
+                            x0 = x;
+                            y0 = y;
+                            z0 = z;
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // couldn't find anything for this task?
+            if (!found)
+                break;
+
+            // dimensions remaining from the anchor
+            int64_t rem_h = height - y0;
+            int64_t rem_d = depth - z0;
+
+            // precompute minimal run length
+            int64_t *w_layer = (int64_t *)safe_malloc(sizeof(int64_t) * rem_d * rem_h);
+
+            for (int64_t dz = 0; dz < rem_d; ++dz)
+            {
+                int64_t z = z0 + dz;
+                int64_t curr_w = INT64_MAX;
+                for (int64_t hh = 1; hh <= rem_h; ++hh)
+                {
+                    int64_t y = y0 + (hh - 1);
+
+                    // compute run length in x at (x0, y, z)
+                    int64_t run = 0;
+                    while (x0 + run < width &&
+                           grid1D[IDX3D(x0 + run, y, z)] == tid)
+                        ++run;
+
+                    if (hh == 1)
+                        curr_w = run;
+                    else if (run < curr_w)
+                        curr_w = run;
+
+                    // store curr_w (may be 0)
+                    w_layer[dz * rem_h + (hh - 1)] = curr_w;
+
+                    // early stop for this layer if curr_w == 0: further hh will be zero too
+                    if (curr_w == 0)
+                    {
+                        // fill remaining hh for this layer with 0 if any
+                        for (int64_t hh2 = hh + 1; hh2 <= rem_h; ++hh2)
+                            w_layer[dz * rem_h + (hh2 - 1)] = 0;
+                        break;
+                    }
+                }
+            }
+
+            // search for (w,h,d) maximizing volume
+            int64_t best_vol = 0;
+            int64_t best_w = 0, best_h = 0, best_d = 0;
+
+            for (int64_t d = 1; d <= rem_d; ++d)
+            {
+                for (int64_t h = 1; h <= rem_h; ++h)
+                {
+                    int64_t min_w = INT64_MAX;
+                    for (int64_t dz = 0; dz < d; ++dz)
+                    {
+                        int64_t w_for_layer = w_layer[dz * rem_h + (h - 1)];
+                        if (w_for_layer < min_w)
+                            min_w = w_for_layer;
+                        if (min_w == 0)
+                            break;
+                    }
+                    if (min_w == 0)
+                        continue;
+                    int64_t vol = min_w * h * d;
+                    if (vol > best_vol)
+                    {
+                        best_vol = vol;
+                        best_w = min_w;
+                        best_h = h;
+                        best_d = d;
+                    }
+                }
+            }
+
+            free(w_layer);
+
+            // best_vol must be > 0 because at least the anchor cell exists
+            // fallback: take the single anchor cell
+            if (best_vol == 0)
+            {
+                best_w = 1;
+                best_h = 1;
+                best_d = 1;
+            }
+
+            // record the cuboid using best_w, best_h, best_d
+            laik_append_range(r, tid, &(Laik_Range){.space = r->list->space, .from = {{x0, y0, z0}}, .to = {{
+                                                                                                         x0 + best_w,
+                                                                                                         y0 + best_h,
+                                                                                                         z0 + best_d,
+                                                                                                     }}},
+                              0, 0);
+
+            // mark covered cells used (set to -1)
+            for (int64_t dz = 0; dz < best_d; ++dz)
+                for (int64_t dy = 0; dy < best_h; ++dy)
+                    for (int64_t dx = 0; dx < best_w; ++dx)
+                        grid1D[IDX3D(x0 + dx, y0 + dy, z0 + dz)] = -1;
+        }
+    }
+
+    laik_svg_profiler_exit(inst, __func__);
 }
 
 //////////////////////
@@ -191,57 +372,158 @@ static void merge_rects(int *grid1D, int width, int height, Laik_RangeReceiver *
 
 // TODO: make this work with domain sizes (sides) that are not powers of 2
 //       also possibly make it work for non-square (rectangular, w != h) domains?
-// TODO: 3d
+// TODO: consider allowing full 64-bit range for indices
 
-// hilbert space-filling curve
-// source: "Programming the Hilbert curve" by John Skilling. AIP Conference Proceedings 707, 381 (2004); https://doi.org/10.1063/1.1751381
-static inline void hilbert_rotate(uint32_t s, uint32_t *x, uint32_t *y, uint32_t rx, uint32_t ry)
+/* hilbert space filling curve (2D, 3D) using Skilling's bitwise method */
+/* -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-= 2D =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=- */
+// helper: rotate indices based on current (sub)quadrant
+//
+// rotate or reflect the coordinates x,y in-place for the sub-square of size s
+// this implements the standard hilbert rotation step used when decoding d to xy
+static inline void hilbert_rotate(uint64_t s, uint64_t *x, uint64_t *y, uint64_t rx, uint64_t ry)
 {
-    // rotate as needed
+    // if ry is zero then the quadrant requires a rotation/reflection
     if (ry == 0)
     {
+        // when rx is one, reflect the coordinates across the center of the s*s subsquare
+        // reflection is performed by mapping v -> s-1-v for both axes
         if (rx == 1)
         {
             *x = s - 1 - *x;
             *y = s - 1 - *y;
         }
 
-        // swap
-        uint32_t t = *x;
+        // swap x and y to complete the 90 degree rotation for this subsquare
+        uint64_t t = *x;
         *x = *y;
         *y = t;
     }
 }
 
-// d -> (x,y) on a (2^b * 2^b) hilbert curve
-static inline void hilbert_d2xy(int b, uint32_t d, uint32_t *x, uint32_t *y)
+// d -> (x,y) on a (2^b * 2^b) 2d hilbert curve
+// using uint64_t to cover complete idx range (for int64_t indices) and ensure well-defined bitops
+//
+// note: this assumes b is in the valid range [1, 32]
+static inline void hilbert_d2xy(unsigned b, uint64_t d, uint64_t *x, uint64_t *y)
 {
+    // start with zeroed coordinates
     *x = *y = 0;
-    for (uint32_t s = 1; s < (1u << b); s <<= 1)
+
+    // iterate over each bit-plane, s is the current subsquare side length
+    // loop doubles s each iteration and stops when s reaches 2^b
+    for (uint64_t s = 1; s < ((uint64_t)1 << b); s <<= 1)
     {
-        uint32_t rx = (d >> 1) & 1;
-        uint32_t ry = (d ^ rx) & 1;
+        // extract the two control bits for this level from d
+        // rx is the more significant of the pair and determines x movement direction
+        uint64_t rx = (d >> 1) & 1u;
+        // ry is derived from d xor rx and determines y movement direction
+        uint64_t ry = (d ^ rx) & 1u;
+
+        // apply the local rotation/reflection for this sub-square
         hilbert_rotate(s, x, y, rx, ry);
+
+        // add the contribution of this level to the coordinates
+        // if rx or ry is 1 then the coordinate moves by s in that axis
         *x += s * rx;
         *y += s * ry;
+
+        // consume the two bits we just used and move to the next level
         d >>= 2;
     }
+}
+
+/* -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-= 3D =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=- */
+// helper: skilling's transposetoaxes, specialized to 3d
+//
+// converts coordinates in "transposed" hilbert form to normal x,y,z axes
+// this implements the in-place bit-manipulation part of skilling's algorithm
+static inline void hilbert_transpose(uint64_t *xx, uint64_t *yy, uint64_t *zz, int b)
+{
+    // initial rotate/xor step that mixes the most-significant bits between z, y, x
+    // this sets up the words so the subsequent loop can undo hilbert rotations/reflections
+    uint64_t t = (*zz) >> 1;
+    *zz ^= *yy;
+    *yy ^= *xx;
+    *xx ^= t;
+
+    // iterate over bit-planes from the second-least-significant power-of-two up to 2^(b-1)
+    // each iteration fixes one level of the transposition using masks
+    for (uint64_t q = 2ULL; q != (1ull << b); q <<= 1)
+    {
+        // p is a mask of all lower bits below q (i.e. q-1)
+        // it is used to select the lower i bits that must be conditionally swapped/xor-ed
+        uint64_t p = q - 1ull;
+
+        // if the current bit of z is set then flip the lower bits of x by p
+        // this corresponds to one branch of the hilbert coordinate correction
+        if ((*zz & q) != 0ull)
+            *xx ^= p;
+        else
+        {
+            // otherwise swap the lower bits between x and z using xor trick
+            // t holds the bits that differ for xor-ing
+            t = ((*xx ^ *zz) & p);
+            *xx ^= t;
+            *zz ^= t;
+        }
+
+        // similarly correct x/y depending on the current bit of y
+        if ((*yy & q) != 0ull)
+            *xx ^= p;
+        else
+        {
+            // swap the lower bits between x and y when y's bit is zero
+            t = ((*xx ^ *yy) & p);
+            *xx ^= t;
+            *yy ^= t;
+        }
+
+        // last step: if the current bit of x is set then flip the lower bits of x by p
+        if ((*xx & q) != 0ull)
+            *xx ^= p; // x xor x = 0
+    }
+}
+
+// d -> (x,y,z) on a (2^b * 2^b * 2^b) 3d hilbert curve
+// note: this assumes b is in the valid range [1, 21] (could be higher, but then we'd have to use a 128 bit d)
+static inline void hilbert_d2xyz(int b, uint64_t d, uint64_t *x, uint64_t *y, uint64_t *z)
+{
+    assert((b > 0 && b <= 21) && "b not in valid range [1, 21]"); // 3 * b <= 64
+
+    // prepare transposed coordinates (each holds b bits, one bit per level)
+    uint64_t xx = 0ull, yy = 0ull, zz = 0ull;
+
+    // extract the interleaved bits from d into xx, yy, zz
+    // d is assumed to have bits laid out as (..., x_i, y_i, z_i, x_{i-1}, y_{i-1}, z_{i-1}, ...)
+    // the loop pulls the 3 bits for each level i out and places them into the i-th position of xx/yy/zz
+    for (int i = b - 1; i >= 0; --i)
+    {
+        xx |= (uint64_t)(((d >> (3 * i + 2)) & 1ull) << i);
+        yy |= (uint64_t)(((d >> (3 * i + 1)) & 1ull) << i);
+        zz |= (uint64_t)(((d >> (3 * i + 0)) & 1ull) << i);
+    }
+
+    // convert from transposed hilbert coordinates to axis-aligned coordinates
+    // i.e. undoes hilbert's local rotations and reflections so xx,yy,zz become the final x,y,z
+    hilbert_transpose(&xx, &yy, &zz, b);
+
+    // return results
+    *x = xx;
+    *y = yy;
+    *z = zz;
 }
 
 // ------------------------- //
 // laik functions start here //
 // ------------------------- //
 
-void runHilbertPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams *p)
+// internal 2d hilbert sfc helper function
+static void hilbert_2d(Laik_RangeReceiver *r, Laik_PartitionerParams *p, double *weights)
 {
-    Laik_Instance *inst = p->space->inst;
+    Laik_Instance *inst = r->params->space->inst;
     laik_svg_profiler_enter(inst, __func__);
 
     int tidcount = p->group->size;
-    int dims = p->space->dims;
-    double *weights = (double *)p->partitioner->data;
-
-    assert(dims == 2); // TODO: remove once 3d is supported
 
     Laik_Space *space = p->space;
     Laik_Range range = space->range;
@@ -249,11 +531,13 @@ void runHilbertPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams *p)
     // validate square domain with side as a power of 2
     int64_t size_x = range.to.i[0] - range.from.i[0];
     int64_t size_y = range.to.i[1] - range.from.i[1];
-    assert(size_x > 0 && size_y > 0 && size_x == size_y && is_power_of_two(size_x) && is_power_of_two(size_y));
+    assert(size_x > 0 && size_y > 0 && size_x == size_y && is_power_of_two(size_x) && is_power_of_two(size_y) && "hilbert curve requires square domain with side length power of two");
 
     // compute total weight (d2xy not needed here, since traversal order doesn't matter)
-    int b = (int)log2(size_x); // side length 2^b
-    uint64_t N = size_x * size_y;
+    int b = log2_int(size_x);                                     // side length 2^b, valid domains: [2^1, 2^1] -> [2^32, 2^32] in increments of consecutive powers of 2
+    assert((b > 0 && b <= 32) && "b not in valid range [1, 32]"); // 2 * b <= 64
+
+    uint64_t N = (uint64_t)size_x * (uint64_t)size_y; // uint64_t to cover full range (incl. exactly 2^32)
     double total_w = 0.0;
 
     for (int64_t y = 0; y < size_y; ++y)
@@ -268,21 +552,21 @@ void runHilbertPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams *p)
     // allocate index-to-task mapping array
     int *idxGrid = (int *)safe_malloc(N * sizeof(int));
 
-    laik_log(1, "lb/hilbert: allocated %ld bytes (%f kB) for index grid\n", N * sizeof(int), .001 * N * sizeof(int));
-    laik_log(1, "lb/hilbert: size %ld, totalw %f, targetw %f for %d procs\n", N, total_w, target, tidcount);
+    laik_log(1, "lb/hilbert_2d: allocated %ld bytes (%f kB) for index grid\n", N * sizeof(int), .001 * N * sizeof(int));
+    laik_log(1, "lb/hilbert_2d: size %ld, totalw %f, targetw %f for %d procs\n", N, total_w, target, tidcount);
 
     // scan hilbert curve and partition based on prefix sum
     for (uint64_t m = 0; m < N; ++m)
     {
-        uint32_t x, y;
+        uint64_t x, y;
         hilbert_d2xy(b, m, &x, &y);
-        sum += get_idx_weight_2d(weights, size_x, (int64_t)x, (int64_t)y);
+        sum += get_idx_weight_2d(weights, size_x, (int64_t)x, (int64_t)y); // casts are safe to do here, since x and y must be positive and can't exceed 2^32 each
         idxGrid[y * size_x + x] = task;
 
-        // target reached -> merge task cells into larger rectangles and flush buffer
+        // target reached: move to next (?) task
         if (sum >= target)
         {
-            laik_log(1, "lb/hikbert: found split at [x:%d,y:%d] for task %d (sum: %f, target %f)\n", x, y, task, sum, target);
+            laik_log(1, "lb/hilbert_2d: found split at [x:%ld, y:%ld] for task %d (sum: %f, target %f)\n", x, y, task, sum, target);
 
             // reset for next task (cap to last index)
             if (task < tidcount - 1)
@@ -292,11 +576,105 @@ void runHilbertPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams *p)
     }
 
     // decompose (destroy) idxgrid into axis-aligned rectangles
-    // each task has its own dynamic list of rectangles (soon-to-be ranges)
     merge_rects(idxGrid, size_x, size_y, r, tidcount);
 
     // free remaining memory
     free(idxGrid);
+
+    laik_svg_profiler_exit(inst, __func__);
+}
+
+// internal 3d hilbert sfc helper function
+static void hilbert_3d(Laik_RangeReceiver *r, Laik_PartitionerParams *p, double *weights)
+{
+    Laik_Instance *inst = r->params->space->inst;
+    laik_svg_profiler_enter(inst, __func__);
+
+    int tidcount = p->group->size;
+
+    Laik_Space *space = p->space;
+    Laik_Range range = space->range;
+
+    // validate square domain with side as a power of 2
+    int64_t size_x = range.to.i[0] - range.from.i[0];
+    int64_t size_y = range.to.i[1] - range.from.i[1];
+    int64_t size_z = range.to.i[2] - range.from.i[2];
+    assert(size_x > 0 && size_y > 0 && size_z > 0 && size_x == size_y && size_y == size_z && is_power_of_two(size_x) && is_power_of_two(size_y) && is_power_of_two(size_z) && "hilbert curve requires cube domain with side length power of two");
+
+    // compute total weight (d2xy not needed here, since traversal order doesn't matter)
+    int b = log2_int(size_x);                                     // side length 2^b, valid domains: [2^1, 2^1] -> [2^21, 2^21] in increments of consecutive powers of 2
+    assert((b > 0 && b <= 21) && "b not in valid range [1, 21]"); // 3 * b <= 64, floored
+
+    uint64_t N = (uint64_t)size_x * (uint64_t)size_y * (uint64_t)size_z; // uint64_t to cover full range (incl. exactly 2^32)
+    double total_w = 0.0;
+
+    for (int64_t z = 0; z < size_z; ++z)
+        for (int64_t y = 0; y < size_y; ++y)
+            for (int64_t x = 0; x < size_x; ++x)
+                total_w += get_idx_weight_3d(weights, size_x, size_y, x, y, z);
+
+    // define variables for distributing chunks evenly based on weight across all tasks
+    double target = total_w / (double)tidcount;
+    int task = 0;
+    double sum = 0.0;
+
+    // allocate index-to-task mapping array
+    int *idxGrid = (int *)safe_malloc(N * sizeof(int));
+
+    laik_log(1, "lb/hilbert_3d: allocated %ld bytes (%f kB) for index grid\n", N * sizeof(int), .001 * N * sizeof(int));
+    laik_log(1, "lb/hilbert_3d: size %ld, totalw %f, targetw %f for %d procs\n", N, total_w, target, tidcount);
+
+    // scan hilbert curve and partition based on prefix sum
+    for (uint64_t m = 0; m < N; ++m)
+    {
+        uint64_t x, y, z;
+        hilbert_d2xyz(b, m, &x, &y, &z);
+        sum += get_idx_weight_3d(weights, size_x, size_y, x, y, z); // casts are safe to do here, since x and y must be positive and can't exceed 2^21 each
+        idxGrid[x + size_x * (y + size_y * z)] = task;
+
+        // target reached: move to next (?) task
+        if (sum >= target)
+        {
+            laik_log(1, "lb/hilbert_3d: found split at [x:%ld, y:%ld, z:%ld] for task %d (sum: %f, target %f)\n", x, y, z, task, sum, target);
+
+            // reset for next task (cap to last index)
+            if (task < tidcount - 1)
+                task++;
+            sum = 0.0;
+        }
+    }
+
+    // decompose (destroy) idxgrid into axis-aligned cuboids
+    merge_cuboids(idxGrid, size_x, size_y, size_z, r, tidcount);
+
+    // free remaining memory
+    free(idxGrid);
+
+    laik_svg_profiler_exit(inst, __func__);
+}
+
+// ------------------------- //
+// laik functions start here //
+// ------------------------- //
+
+void runHilbertPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams *p)
+{
+    Laik_Instance *inst = p->space->inst;
+    laik_svg_profiler_enter(inst, __func__);
+
+    int dims = p->space->dims;
+    double *weights = (double *)p->partitioner->data;
+
+    if (dims == 2)
+        hilbert_2d(r, p, weights);
+    else if (dims == 3)
+        hilbert_3d(r, p, weights);
+    else
+    {
+        laik_panic("Unsupported dimensions for Hilbert partitioner (must be: 2 or 3)");
+        exit(EXIT_FAILURE);
+    }
+
     laik_svg_profiler_exit(inst, __func__);
 }
 
@@ -434,9 +812,7 @@ static void rcb_2d(Laik_RangeReceiver *r, Laik_Range *range, int fromTask, int t
         {
             // gather sum of all weights in current row (same y)
             for (int64_t x = from_x; x < to_x; ++x)
-            {
                 sum += get_idx_weight_2d(weights, size_x, x, y);
-            }
 
             // check if sum exceeds weight target, otherwise continue
             if (sum >= ltarget)
@@ -454,9 +830,7 @@ static void rcb_2d(Laik_RangeReceiver *r, Laik_Range *range, int fromTask, int t
         {
             // gather sum of all weights in current column (same x)
             for (int64_t y = from_y; y < to_y; ++y)
-            {
                 sum += get_idx_weight_2d(weights, size_x, x, y);
-            }
 
             // check if sum exceeds weight target, otherwise continue
             if (sum >= ltarget)
@@ -486,6 +860,155 @@ static void rcb_2d(Laik_RangeReceiver *r, Laik_Range *range, int fromTask, int t
     laik_svg_profiler_exit(inst, __func__);
 }
 
+// internal 3d rcb helper function
+static void rcb_3d(Laik_RangeReceiver *r, Laik_Range *range, int fromTask, int toTask, double *weights)
+{
+    Laik_Instance *inst = r->params->space->inst;
+    laik_svg_profiler_enter(inst, __func__);
+
+    int64_t size_x = range->space->range.to.i[0] - range->space->range.from.i[0];
+    int64_t size_y = range->space->range.to.i[1] - range->space->range.from.i[1];
+
+    int64_t from_x = range->from.i[0];
+    int64_t from_y = range->from.i[1];
+    int64_t from_z = range->from.i[2];
+    int64_t to_x = range->to.i[0];
+    int64_t to_y = range->to.i[1];
+    int64_t to_z = range->to.i[2];
+
+    // if there's only one processor left, stop here
+    int count = toTask - fromTask + 1;
+    if (count == 1)
+    {
+        laik_append_range(r, fromTask, range, 0, 0);
+        laik_svg_profiler_exit(inst, __func__);
+        return;
+    }
+
+    // axis: 0 -> x, 1 -> y, 2 -> z
+    int64_t dx = to_x - from_x;
+    int64_t dy = to_y - from_y;
+    int64_t dz = to_z - from_z;
+    int axis = 0;
+    if (dy > dx && dy >= dz)
+        axis = 1;
+    else if (dz > dx && dz > dy)
+        axis = 2;
+
+    // return if we cannot split along that axis
+    int64_t length_along_axis = (axis == 0) ? dx : (axis == 1) ? dy
+                                                               : dz;
+    if (length_along_axis == 1)
+    {
+        laik_append_range(r, fromTask, range, 0, 0);
+        laik_svg_profiler_exit(inst, __func__);
+        return;
+    }
+
+    // calculate how many procs go left vs. right
+    int lcount = count / 2;
+    int rcount = count - lcount;
+    int tmid = fromTask + lcount - 1;
+
+    // calculate sum of weights (naive) and target weight
+    double totalW = 0.0;
+    for (int64_t x = from_x; x < to_x; ++x)
+        for (int64_t y = from_y; y < to_y; ++y)
+            for (int64_t z = from_z; z < to_z; ++z)
+                totalW += get_idx_weight_3d(weights, size_x, size_y, x, y, z);
+
+    double ltarget = totalW * ((double)lcount / count);
+
+    laik_log(1, "lb/rcb_3d: [T%d-T%d) [%ld,%ld,%ld] -> (%ld,%ld,%ld), count: %d, lcount: %d, rcount: %d, tmid: %d, totalW: %f, ltarget: %f, axis: %d\n",
+             fromTask, toTask, from_x, from_y, from_z, to_x, to_y, to_z, count, lcount, rcount, tmid, totalW, ltarget, axis);
+
+    // accumulate weights along splitting axis and find first index where prefix sum exceeds target weight
+    double sum = 0.0;
+    int64_t split_x = from_x;
+    int64_t split_y = from_y;
+    int64_t split_z = from_z;
+
+    if (axis == 0)
+    {
+        // x longest: for each x, sum over all y,z
+        for (int64_t x = from_x; x < to_x; ++x)
+        {
+            for (int64_t y = from_y; y < to_y; ++y)
+                for (int64_t z = from_z; z < to_z; ++z)
+                    sum += get_idx_weight_3d(weights, size_x, size_y, x, y, z);
+
+            if (sum >= ltarget)
+            {
+                split_x = x;
+                laik_log(1, "lb/rcb_3d: found x-split at x = %ld (sum: %f)\n", x, sum);
+                break;
+            }
+        }
+    }
+    else if (axis == 1)
+    {
+        // y longest: for each y, sum over all x,z
+        for (int64_t y = from_y; y < to_y; ++y)
+        {
+            for (int64_t x = from_x; x < to_x; ++x)
+                for (int64_t z = from_z; z < to_z; ++z)
+                    sum += get_idx_weight_3d(weights, size_x, size_y, x, y, z);
+
+            if (sum >= ltarget)
+            {
+                split_y = y;
+                laik_log(1, "lb/rcb_3d: found y-split at y = %ld (sum: %f)\n", y, sum);
+                break;
+            }
+        }
+    }
+    else /* axis == 2 */
+    {
+        // z longest: for each z, sum over all x,y
+        for (int64_t z = from_z; z < to_z; ++z)
+        {
+            for (int64_t x = from_x; x < to_x; ++x)
+                for (int64_t y = from_y; y < to_y; ++y)
+                    sum += get_idx_weight_3d(weights, size_x, size_y, x, y, z);
+
+            if (sum >= ltarget)
+            {
+                split_z = z;
+                laik_log(1, "lb/rcb_3d: found z-split at z = %ld (sum: %f)\n", z, sum);
+                break;
+            }
+        }
+    }
+
+    // cut and recurse
+    Laik_Range r1 = *range, r2 = *range;
+    if (axis == 0)
+    {
+        r1.to.i[0] = split_x;
+        r2.from.i[0] = split_x;
+    }
+    else if (axis == 1)
+    {
+        r1.to.i[1] = split_y;
+        r2.from.i[1] = split_y;
+    }
+    else /* axis == 2 */
+    {
+        r1.to.i[2] = split_z;
+        r2.from.i[2] = split_z;
+    }
+
+    laik_log(1, "lb/rcb_3d: split (x,y,z): %ld,%ld,%ld; r1: [%ld,%ld,%ld] -> (%ld,%ld,%ld); r2: [%ld,%ld,%ld] -> (%ld,%ld,%ld)\n",
+             split_x, split_y, split_z,
+             r1.from.i[0], r1.from.i[1], r1.from.i[2], r1.to.i[0], r1.to.i[1], r1.to.i[2],
+             r2.from.i[0], r2.from.i[1], r2.from.i[2], r2.to.i[0], r2.to.i[1], r2.to.i[2]);
+
+    rcb_3d(r, &r1, fromTask, tmid, weights);
+    rcb_3d(r, &r2, tmid + 1, toTask, weights);
+
+    laik_svg_profiler_exit(inst, __func__);
+}
+
 // ------------------------- //
 // laik functions start here //
 // ------------------------- //
@@ -495,7 +1018,7 @@ void runRCBPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams *p)
     Laik_Instance *inst = p->space->inst;
     laik_svg_profiler_enter(inst, __func__);
 
-    unsigned tidcount = p->group->size;
+    int tidcount = p->group->size;
     int dims = p->space->dims;
     double *weights = (double *)p->partitioner->data;
 
@@ -506,6 +1029,8 @@ void runRCBPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams *p)
         rcb_1d(r, &range, 0, tidcount - 1, weights);
     else if (dims == 2)
         rcb_2d(r, &range, 0, tidcount - 1, weights);
+    else /* if (dims == 3) */
+        rcb_3d(r, &range, 0, tidcount - 1, weights);
 
     laik_svg_profiler_exit(inst, __func__);
 }
@@ -593,10 +1118,10 @@ static double *init_weights(Laik_Partitioning *p, double ttime)
 
     // allocate weight array and zero-initialize
     // for t tasks, the final t elements of the array are the raw times taken by each task (starting from 0, one after the last weight)
-    int dims = p->space->dims;
+    int dims = p->space->dims; // assume dims in {1,2,3}
     int64_t size_x = space->range.to.i[0] - space->range.from.i[0];
     int64_t size_y = dims >= 2 ? (space->range.to.i[1] - space->range.from.i[1]) : 1;
-    int64_t size_z = dims >= 3 ? (space->range.to.i[2] - space->range.from.i[2]) : 1;
+    int64_t size_z = dims == 3 ? (space->range.to.i[2] - space->range.from.i[2]) : 1;
     int64_t size = size_x * size_y * size_z;
 
     weights = (double *)safe_malloc(size * sizeof(double));
@@ -626,6 +1151,14 @@ static double *init_weights(Laik_Partitioning *p, double ttime)
             tnitems += count;
             laik_log(1, "lb/init_weights: [%ld,%ld]->(%ld,%ld), tnitems + %ld = %ld\n", from_x, from_y, to_x, to_y, count, tnitems);
         }
+        else /* if (dims == 3) */
+        {
+            int64_t from_x, from_y, from_z, to_x, to_y, to_z;
+            laik_my_range_3d(p, r, &from_x, &to_x, &from_y, &to_y, &from_z, &to_z);
+            int64_t count = (to_x - from_x) * (to_y - from_y) * (to_z - from_z);
+            tnitems += count;
+            laik_log(1, "lb/init_weights: [%ld,%ld,%ld]->(%ld,%ld,%ld), tnitems + %ld = %ld\n", from_x, from_y, from_z, to_x, to_y, to_z, count, tnitems);
+        }
     };
 
     // broadcast weight to own indices
@@ -644,9 +1177,18 @@ static double *init_weights(Laik_Partitioning *p, double ttime)
         {
             int64_t from_x, from_y, to_x, to_y;
             laik_my_range_2d(p, r, &from_x, &to_x, &from_y, &to_y);
-            for (int64_t x = from_x; x < to_x; ++x)
-                for (int64_t y = from_y; y < to_y; ++y)
+            for (int64_t y = from_y; y < to_y; ++y)
+                for (int64_t x = from_x; x < to_x; ++x)
                     weights[y * size_x + x] = tweight;
+        }
+        else /* if (dims == 3) */
+        {
+            int64_t from_x, from_y, from_z, to_x, to_y, to_z;
+            laik_my_range_3d(p, r, &from_x, &to_x, &from_y, &to_y, &from_z, &to_z);
+            for (int64_t z = from_z; z < to_z; ++z)
+                for (int64_t y = from_y; y < to_y; ++y)
+                    for (int64_t x = from_x; x < to_x; ++x)
+                        weights[x + size_x * (y + size_y * z)] = tweight;
         }
     }
 
@@ -688,7 +1230,7 @@ Laik_Partitioning *laik_lb_balance(Laik_LBState state, Laik_Partitioning *partit
     static int p_startctr = 0;
     static int segment = 0; // load balancing segment, for debugging purposes
 
-    assert(t_stop < t_start); // stopping threshold should be under starting threshold
+    assert(t_stop < t_start && "stopping threshold should be under starting threshold");
 
     // when starting a new load balancing segment, start timer and do nothing else
     if (state == START_LB_SEGMENT)
