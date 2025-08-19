@@ -16,8 +16,6 @@
 
 /**
  * 2d Jacobi example (with load balancing).
- *
- * TODO: make this example work with sfc load balancing algorithms
  */
 
 #include <laik.h>

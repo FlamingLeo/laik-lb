@@ -1,13 +1,16 @@
 # default settings
+ASANCOPT = -fsanitize=address -fno-omit-frame-pointer
+ASANLDOPT = -fsanitize=address -Wl,-Bdynamic -lasan
+
 PREFIX=/usr/local
-OPT=-O0 -g
+OPT=-O0 -g #$(ASANCOPT)
 WARN=-Wall -Wextra
 SUBDIRS=examples
 
 # settings from 'configure', may overwrite defaults
 -include Makefile.config
 
-LDFLAGS=$(OPT)
+LDFLAGS=$(OPT) #$(ASANLDOPT)
 IFLAGS=-I$(SDIR)include -I$(SDIR)src -I.
 LDLIBS=-ldl
 

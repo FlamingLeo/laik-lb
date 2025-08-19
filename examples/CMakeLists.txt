@@ -7,6 +7,7 @@ foreach (example
     "jac2d-lb"
     "jac2d-ser"
     "jac3d"
+    "jac3d-lb"
     "markov"
     "markov2"
     "markov-ser"
