@@ -70,7 +70,8 @@ def plot_timeline(dirname, events: List[Event], figsize=(12, None)):
 
     # display
     timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-    filename = f'{dirname}/../trace_{timestamp}.svg'
+    filename = f'{dirname.split("/json")[-2]}/trace_{timestamp}.svg'
+    print(f'saved trace to: {filename}')
 
     plt.savefig(filename, bbox_inches='tight')
     plt.close()

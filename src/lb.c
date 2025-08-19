@@ -91,6 +91,18 @@ static void *safe_malloc(size_t n)
     return p;
 }
 
+// public: get algorithm enum from string
+// unknown algorithm -> fall back to hilbert sfc
+Laik_LBAlgorithm laik_strtolb(const char *str)
+{
+    if (strcmp(str, "rcb") == 0)
+        return LB_RCB;
+    else if (strcmp(str, "hilbert") == 0)
+        return LB_HILBERT;
+    else
+        return LB_HILBERT;
+}
+
 // public: get algorithm string from enum
 const char *laik_get_lb_algorithm_name(Laik_LBAlgorithm algo)
 {

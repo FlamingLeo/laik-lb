@@ -8,19 +8,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#define CSVNAME "array_data.csv"
-
-// helper function to convert a string to a load balancing algorithm enum value
-// unknown algorithm -> fall back to hilbert sfc
-static Laik_LBAlgorithm strtolb(const char *str)
-{
-    if (strcmp(str, "rcb") == 0)
-        return LB_RCB;
-    else if (strcmp(str, "hilbert") == 0)
-        return LB_HILBERT;
-    else
-        return LB_HILBERT;
-}
+#define CSVNAME "array_data_lb.csv"
 
 ////////////////////////
 // iteration examples //
@@ -317,12 +305,12 @@ int main(int argc, char *argv[])
     else if (example == 2)
     {
         sidelen = 1024;
-        main_2d(argc, argv, sidelen, lcount, algo ? strtolb(algo) : LB_HILBERT);
+        main_2d(argc, argv, sidelen, lcount, algo ? laik_strtolb(algo) : LB_HILBERT);
     }
     else if (example == 3)
     {
         sidelen = 64;
-        main_3d(argc, argv, sidelen, lcount, algo ? strtolb(algo) : LB_HILBERT);
+        main_3d(argc, argv, sidelen, lcount, algo ? laik_strtolb(algo) : LB_HILBERT);
     }
     else
     {

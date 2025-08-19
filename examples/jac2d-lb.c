@@ -1,5 +1,6 @@
 /* This file is part of the LAIK parallel container library.
  * Copyright (c) 2017 Josef Weidendorfer
+ * Extended with load balancing functionality 2025 by Flavius Schmidt.
  *
  * LAIK is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Lesser General Public License as
@@ -28,13 +29,11 @@
 #include <unistd.h>
 #include <math.h>
 
-#define PROFILING 1
 #define SIZE 1024
 #define MAXITER 100
 #define RES_ITER 10
 #define WL_LB_ITER 5
-#define LB_ALGO LB_HILBERT
-#define CSVNAME "array_data.csv"
+#define CSVNAME "array_data_jac2dlb.csv"
 
 #define WORKLOAD
 
@@ -60,7 +59,7 @@
     /* npRead: pointer to new read partition based on new write partition borders */ \
     if ((_iter == 0) || (iter < _iter))                                              \
     {                                                                                \
-        if ((npWrite = laik_lb_balance(STOP_LB_SEGMENT, pWrite, LB_ALGO)) == pWrite) \
+        if ((npWrite = laik_lb_balance(STOP_LB_SEGMENT, pWrite, algo)) == pWrite)    \
             continue;                                                                \
                                                                                      \
         npRead = laik_new_partitioning(prRead, world, space, npWrite);               \
@@ -133,15 +132,44 @@ int main(int argc, char *argv[])
     int size = 0;
     int maxiter = 0;
     bool use_cornerhalo = true; // use halo partitioner including corners?
-    bool do_profiling = getenv("J2D_PROFILING");
-
-    int arg = 1;
+    bool do_visualization = false;
+    bool do_profiling = false;
+    bool do_sum = true;
+    Laik_LBAlgorithm algo = LB_HILBERT;
     int myid = laik_myid(world);
+    int arg = 1;
+    while ((argc > arg) && (argv[arg][0] == '-'))
+    {
+        if (argv[arg][1] == 'n')
+            use_cornerhalo = false;
+        if (argv[arg][1] == 'p')
+            do_profiling = true;
+        if (argv[arg][1] == 's')
+            do_sum = true;
+        if (argv[arg][1] == 'v')
+            do_visualization = true;
+        if (argv[arg][1] == 'h')
+        {
+            if (myid == 0)
+                printf("Usage: %s [options] <lb-algo> <side width> <maxiter> <repart>\n\n"
+                       "Options:\n"
+                       " -n : use partitioner which does not include corners\n"
+                       " -p : export and visualize program trace as json files / collective svg\n"
+                       " -s : print value sum at end (warning: sum done at master)\n"
+                       " -v : export and visualize partitioning borders at the end of the run\n"
+                       " -h : print this help text and exit with code 1\n",
+                       argv[0]);
+            exit(1);
+        }
+        arg++;
+    }
 
     if (argc > arg)
-        size = atoi(argv[arg]);
+        algo = laik_strtolb(argv[arg]);
     if (argc > arg + 1)
-        maxiter = atoi(argv[arg + 1]);
+        size = atoi(argv[arg + 1]);
+    if (argc > arg + 2)
+        maxiter = atoi(argv[arg + 2]);
 
     if (size == 0)
         size = SIZE; // size² entries
@@ -151,10 +179,10 @@ int main(int argc, char *argv[])
     if (myid == 0)
     {
         printf("%d x %d cells (mem %.1f MB), running %d iterations with %d tasks using %s",
-               size, size, .000016 * size * size, maxiter, laik_size(world), laik_get_lb_algorithm_name(LB_ALGO));
+               size, size, .000016 * size * size, maxiter, laik_size(world), laik_get_lb_algorithm_name(algo));
         if (!use_cornerhalo)
             printf(" (halo without corners)");
-        printf("\n");
+        printf("\nvisualization: %d, profiling: %d, sum: %d\n", do_visualization, do_profiling, do_sum);
     }
 
     // start profiling interface
@@ -222,9 +250,8 @@ int main(int argc, char *argv[])
 
     laik_svg_profiler_enter(inst, __func__);
 
-    int iter = 0;
-
     // begin iterations
+    int iter = 0;
     for (; iter < maxiter; iter++)
     {
         laik_set_iteration(inst, iter + 1);
@@ -295,8 +322,6 @@ int main(int argc, char *argv[])
                     double above = baseR[(y + 1) * ystrideR + x];
 
                     newValue = 0.25 * (below + left + right + above);
-                    // printf("newVal = 0.25 * (%.1f + %.1f + %.1f + %.1f) = %.1f\n", below, left, right, above, newValue);
-                    // fflush(stdout);
 
                     // for calculating the residual, accumulate it for all ranges
                     if (resCond)
@@ -317,6 +342,8 @@ int main(int argc, char *argv[])
         // do residual calculation on the proper iteration
         if (resCond)
         {
+            _res_iters++;
+            
             // calculate global residuum
             laik_switchto_flow(sumD, LAIK_DF_None, LAIK_RO_None);
             laik_get_map_1d(sumD, 0, (void **)&sumPtr, 0);
@@ -366,26 +393,26 @@ int main(int argc, char *argv[])
                  gUpdates * diter * 40 / dt);
     }
 
-    // calculate sum for verification
-    Laik_Group *activeGroup = laik_data_get_group(dWrite);
-
-    // for check at end: sum up all just written values
-    Laik_Partitioning *pMaster;
-    pMaster = laik_new_partitioning(laik_Master, activeGroup, space, 0);
-    laik_switchto_partitioning(dWrite, pMaster, LAIK_DF_Preserve, LAIK_RO_None);
-
-    if (laik_myid(activeGroup) == 0)
+    if (do_sum)
     {
-        double sum = 0.0;
-        laik_get_map_2d(dWrite, 0, (void **)&baseW, &ysizeW, &ystrideW, &xsizeW);
-        for (uint64_t y = 0; y < ysizeW; y++)
-            for (uint64_t x = 0; x < xsizeW; x++)
-                sum += baseW[y * ystrideW + x];
+        // for check at end: sum up all just written values
+        Laik_Partitioning *pMaster;
+        pMaster = laik_new_partitioning(laik_Master, world, space, 0);
+        laik_switchto_partitioning(dWrite, pMaster, LAIK_DF_Preserve, LAIK_RO_None);
 
-        printf("Global value sum after %d iterations: %f\n", iter, sum);
+        if (myid == 0)
+        {
+            double sum = 0.0;
+            laik_get_map_2d(dWrite, 0, (void **)&baseW, &ysizeW, &ystrideW, &xsizeW);
+            for (uint64_t y = 0; y < ysizeW; y++)
+                for (uint64_t x = 0; x < xsizeW; x++)
+                    sum += baseW[y * ystrideW + x];
+
+            printf("Global value sum after %d iterations: %f\n", iter, sum);
+        }
     }
 
-    if (getenv("LAIK_VIS"))
+    if (do_visualization)
     {
         if (myid == 0)
         {

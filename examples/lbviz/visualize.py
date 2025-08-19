@@ -229,7 +229,7 @@ def main():
     base_dir = os.path.dirname(filename)
     base_name = os.path.splitext(os.path.basename(filename))[0]
     timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-    out_filename = os.path.join(base_dir, f'{base_name}_plot_{timestamp}.png')
+    out_filename = os.path.join(base_dir, f'plot_{timestamp}.png')
 
     visualize_array_as_image(array, out_filename=out_filename)
     print(f'saved plot to: {out_filename}')
