@@ -10,6 +10,18 @@
 
 #define CSVNAME "array_data.csv"
 
+// helper function to convert a string to a load balancing algorithm enum value
+// unknown algorithm -> fall back to hilbert sfc
+static Laik_LBAlgorithm strtolb(const char *str)
+{
+    if (strcmp(str, "rcb") == 0)
+        return LB_RCB;
+    else if (strcmp(str, "hilbert") == 0)
+        return LB_HILBERT;
+    else
+        return LB_HILBERT;
+}
+
 ////////////////////////
 // iteration examples //
 ////////////////////////
@@ -21,7 +33,8 @@ int main_1d(int argc, char *argv[], int64_t spsize, int lcount)
     Laik_Instance *inst = laik_init(&argc, &argv);
     Laik_Group *world = laik_world(inst);
     int id = laik_myid(world);
-    Laik_LBAlgorithm lbalg = LB_RCB;
+    Laik_LBAlgorithm lbalg = LB_RCB; // sfc incompatible
+    bool do_visualization = getenv("LAIK_VIS");
 
     laik_lbvis_enable_trace(id, inst);
     laik_svg_profiler_enter(inst, __func__);
@@ -31,6 +44,7 @@ int main_1d(int argc, char *argv[], int64_t spsize, int lcount)
         printf("Running 1D example with %d iterations.\n", lcount);
         printf("Space size %ld.\n", spsize);
         printf("Using LB algorithm: %s\n", laik_get_lb_algorithm_name(lbalg));
+        printf("Visualisation: %d\n", do_visualization);
     }
 
     Laik_Space *space = laik_new_space_1d(inst, spsize);
@@ -40,6 +54,7 @@ int main_1d(int argc, char *argv[], int64_t spsize, int lcount)
     laik_switchto_partitioning(data, part, LAIK_DF_None, LAIK_RO_None);
 
     int iterations = (id + 1) * 10;
+    double c = 0.25; // sleep time constant multiplier
 
     // log range (debug)
     int64_t from, to;
@@ -58,7 +73,7 @@ int main_1d(int argc, char *argv[], int64_t spsize, int lcount)
             uint64_t count;
             laik_get_map_1d(data, 0, NULL, &count);
             uint64_t sleepdur = count;
-            usleep(sleepdur);
+            usleep((double)sleepdur * c);
         }
 
         // calculate and switch to new partitioning determined by load balancing algorithm
@@ -76,7 +91,7 @@ int main_1d(int argc, char *argv[], int64_t spsize, int lcount)
     }
 
     // visualize task ranges
-    if (getenv("LAIK_VIS"))
+    if (do_visualization)
     {
         if (id == 0)
         {
@@ -96,13 +111,13 @@ int main_1d(int argc, char *argv[], int64_t spsize, int lcount)
 }
 
 // 2d example
-int main_2d(int argc, char *argv[], int64_t sdsize, int lcount)
+int main_2d(int argc, char *argv[], int64_t sdsize, int lcount, Laik_LBAlgorithm lbalg)
 {
     // initialization
     Laik_Instance *inst = laik_init(&argc, &argv);
     Laik_Group *world = laik_world(inst);
     int id = laik_myid(world);
-    Laik_LBAlgorithm lbalg = LB_HILBERT;
+    bool do_visualization = getenv("LAIK_VIS");
 
     laik_lbvis_enable_trace(id, inst);
     laik_svg_profiler_enter(inst, __func__);
@@ -112,6 +127,7 @@ int main_2d(int argc, char *argv[], int64_t sdsize, int lcount)
         printf("Running 2D example with %d iterations.\n", lcount);
         printf("Space size %ldx%ld = %ld.\n", sdsize, sdsize, sdsize * sdsize);
         printf("Using LB algorithm: %s\n", laik_get_lb_algorithm_name(lbalg));
+        printf("Visualisation: %d\n", do_visualization);
     }
 
     Laik_Space *space = laik_new_space_2d(inst, sdsize, sdsize);
@@ -159,7 +175,7 @@ int main_2d(int argc, char *argv[], int64_t sdsize, int lcount)
     }
 
     // visualize task ranges
-    if (getenv("LAIK_VIS"))
+    if (do_visualization)
     {
         if (id == 0)
         {
@@ -179,12 +195,12 @@ int main_2d(int argc, char *argv[], int64_t sdsize, int lcount)
 }
 
 // 3d example
-int main_3d(int argc, char *argv[], int64_t sdsize, int lcount)
+int main_3d(int argc, char *argv[], int64_t sdsize, int lcount, Laik_LBAlgorithm lbalg)
 {
     Laik_Instance *inst = laik_init(&argc, &argv);
     Laik_Group *world = laik_world(inst);
     int id = laik_myid(world);
-    Laik_LBAlgorithm lbalg = LB_HILBERT;
+    bool do_visualization = getenv("LAIK_VIS");
 
     laik_lbvis_enable_trace(id, inst);
     laik_svg_profiler_enter(inst, __func__);
@@ -194,6 +210,7 @@ int main_3d(int argc, char *argv[], int64_t sdsize, int lcount)
         printf("Running 3D example with %d iterations.\n", lcount);
         printf("Space size %ldx%ldx%ld = %ld\n", sdsize, sdsize, sdsize, sdsize * sdsize * sdsize);
         printf("Using LB algorithm: %s\n", laik_get_lb_algorithm_name(lbalg));
+        printf("Visualisation: %d\n", do_visualization);
     }
 
     Laik_Space *space = laik_new_space_3d(inst, sdsize, sdsize, sdsize);
@@ -203,7 +220,7 @@ int main_3d(int argc, char *argv[], int64_t sdsize, int lcount)
     laik_switchto_partitioning(data, part, LAIK_DF_None, LAIK_RO_None);
 
     int iterations = (id + 1) * 10;
-    double c = 0.25; // sleep time constant multiplier
+    double c = 0.5; // sleep time constant multiplier
 
     // debug logging for local ranges
     int64_t from_x, to_x, from_y, to_y, from_z, to_z;
@@ -244,7 +261,7 @@ int main_3d(int argc, char *argv[], int64_t sdsize, int lcount)
     }
 
     // visualize task ranges
-    if (getenv("LAIK_VIS"))
+    if (do_visualization)
     {
         if (id == 0)
         {
@@ -282,19 +299,31 @@ int main(int argc, char *argv[])
         exit(1);
 
     // optional space size and loop count arguments
-    int64_t sidelen = 64;
-    int lcount = 10; // loop count
+    int64_t sidelen;
+    char *algo = NULL;
+    int lcount = 5; // loop count, increase this to test thresholds
     if (argc > 2)
-        sidelen = atoi(argv[2]);
+        algo = argv[2];
     if (argc > 3)
-        lcount = atoi(argv[3]);
+        sidelen = atoi(argv[3]);
+    if (argc > 4)
+        lcount = atoi(argv[4]);
 
     if (example == 1)
-        main_1d(argc, argv, sidelen, lcount);
+    {
+        sidelen = 1048576;
+        main_1d(argc, argv, sidelen, lcount /*, rcb obligatory*/);
+    }
     else if (example == 2)
-        main_2d(argc, argv, sidelen, lcount);
+    {
+        sidelen = 1024;
+        main_2d(argc, argv, sidelen, lcount, algo ? strtolb(algo) : LB_HILBERT);
+    }
     else if (example == 3)
-        main_3d(argc, argv, sidelen, lcount);
+    {
+        sidelen = 64;
+        main_3d(argc, argv, sidelen, lcount, algo ? strtolb(algo) : LB_HILBERT);
+    }
     else
     {
         fprintf(stderr, "Invalid example!\n");

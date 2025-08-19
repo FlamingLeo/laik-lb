@@ -96,7 +96,7 @@ static Laik_Layout* mylayout_new(int n, Laik_Range* range)
 // main function
 int main(int argc, char* argv[])
 {
-    Laik_Instance* inst = laik_init (&argc, &argv);
+    Laik_Instance* inst = laik_init(&argc, &argv);
     Laik_Group* world = laik_world(inst);
 
     int size = 0;

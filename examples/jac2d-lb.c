@@ -29,10 +29,8 @@
 #include <math.h>
 
 #define PROFILING 1
-#define SUM 1
-
 #define SIZE 1024
-#define MAXITER 10
+#define MAXITER 100
 #define RES_ITER 10
 #define WL_LB_ITER 5
 #define LB_ALGO LB_HILBERT
@@ -49,7 +47,7 @@
     {                                                                            \
         int64_t globFromX, globToX, globFromY, globToY;                          \
         laik_my_range_2d(pWrite, r, &globFromX, &globToX, &globFromY, &globToY); \
-        int itercount = (globFromX + x) * (globFromY + y) / 4000;                \
+        int itercount = ((globFromX + x) + (globFromY + y)) * 3;                 \
         volatile double sink = 0.0; /* volatile to prevent optimizing out */     \
         for (int k = 0; k < itercount; ++k)                                      \
             sink += baseR[y * ystrideR + x] * 0.0 + k * 1e-9;                    \
@@ -135,8 +133,7 @@ int main(int argc, char *argv[])
     int size = 0;
     int maxiter = 0;
     bool use_cornerhalo = true; // use halo partitioner including corners?
-    bool do_profiling = PROFILING;
-    bool do_sum = SUM;
+    bool do_profiling = getenv("J2D_PROFILING");
 
     int arg = 1;
     int myid = laik_myid(world);
@@ -160,11 +157,9 @@ int main(int argc, char *argv[])
         printf("\n");
     }
 
-#if PROFILING
     // start profiling interface
     if (do_profiling)
         laik_lbvis_enable_trace(myid, inst);
-#endif
 
     double *baseR, *baseW, *sumPtr;
     uint64_t ysizeR, ystrideR, xsizeR;
@@ -371,25 +366,23 @@ int main(int argc, char *argv[])
                  gUpdates * diter * 40 / dt);
     }
 
-    if (do_sum)
+    // calculate sum for verification
+    Laik_Group *activeGroup = laik_data_get_group(dWrite);
+
+    // for check at end: sum up all just written values
+    Laik_Partitioning *pMaster;
+    pMaster = laik_new_partitioning(laik_Master, activeGroup, space, 0);
+    laik_switchto_partitioning(dWrite, pMaster, LAIK_DF_Preserve, LAIK_RO_None);
+
+    if (laik_myid(activeGroup) == 0)
     {
-        Laik_Group *activeGroup = laik_data_get_group(dWrite);
+        double sum = 0.0;
+        laik_get_map_2d(dWrite, 0, (void **)&baseW, &ysizeW, &ystrideW, &xsizeW);
+        for (uint64_t y = 0; y < ysizeW; y++)
+            for (uint64_t x = 0; x < xsizeW; x++)
+                sum += baseW[y * ystrideW + x];
 
-        // for check at end: sum up all just written values
-        Laik_Partitioning *pMaster;
-        pMaster = laik_new_partitioning(laik_Master, activeGroup, space, 0);
-        laik_switchto_partitioning(dWrite, pMaster, LAIK_DF_Preserve, LAIK_RO_None);
-
-        if (laik_myid(activeGroup) == 0)
-        {
-            double sum = 0.0;
-            laik_get_map_2d(dWrite, 0, (void **)&baseW, &ysizeW, &ystrideW, &xsizeW);
-            for (uint64_t y = 0; y < ysizeW; y++)
-                for (uint64_t x = 0; x < xsizeW; x++)
-                    sum += baseW[y * ystrideW + x];
-
-            printf("Global value sum after %d iterations: %f\n", iter, sum);
-        }
+        printf("Global value sum after %d iterations: %f\n", iter, sum);
     }
 
     if (getenv("LAIK_VIS"))
