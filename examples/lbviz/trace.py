@@ -1,13 +1,12 @@
 # NOTE: this script is intended to be called from inside the C program!
 #       file path resolution may fail otherwise if not called from the proper directory
+import os
 import json
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from pathlib import Path
 from typing import List, Dict
 from datetime import datetime
-
-PREFIX = 'lbviz/' # needed if the script is called automatically through the lb program / C code
 
 # keys: "name", "start", "end", "track"
 Event = Dict[str, float]
@@ -27,11 +26,11 @@ def load_events_from_dir(directory: str) -> List[Event]:
     return all_events
 
 # plot the program trace for each (MPI) task
-def plot_timeline(events: List[Event], figsize=(12, None)):
+def plot_timeline(dirname, events: List[Event], figsize=(12, None)):
     # build color map from function names
     # (!) later calls overlap earlier calls
     func_names = sorted({ev["name"] for ev in events})
-    cmap = plt.get_cmap("tab10")
+    cmap = plt.get_cmap("tab10") # type: ignore
     color_map = {fn: cmap(i % 10) for i, fn in enumerate(func_names)}
     events_sorted = sorted(events, key=lambda e: (e["start"], -e["end"]))
 
@@ -55,11 +54,11 @@ def plot_timeline(events: List[Event], figsize=(12, None)):
     end_time   = max(ev["end"]   for ev in events_sorted)
     ax.set_xlim(start_time, end_time)
     ax.set_xlabel("Time Offset (s)")
-    ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{round(x - start_time)}"))
+    ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{round(x - start_time)}")) # type: ignore
 
     # y axis: tracks (task ids)
-    yticks = [(i * 10 + 4.5) for i in range(n_tracks)]
-    ylabels = [str(i) for i in range(n_tracks)]
+    yticks = [(i * 10 + 4.5) for i in range(n_tracks)] # type: ignore
+    ylabels = [str(i) for i in range(n_tracks)] # type: ignore
     ax.set_yticks(yticks)
     ax.set_yticklabels(ylabels)
     ax.set_ylabel("Task")
@@ -71,11 +70,12 @@ def plot_timeline(events: List[Event], figsize=(12, None)):
 
     # display
     timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-    filename = f'{PREFIX}trace_{timestamp}.svg'
+    filename = f'{dirname}/../trace_{timestamp}.svg'
 
     plt.savefig(filename, bbox_inches='tight')
     plt.close()
 
 if __name__ == "__main__":
-    events = load_events_from_dir(PREFIX)
-    plot_timeline(events)
+    dirname = f'{os.path.dirname(os.path.realpath(__file__))}/json'
+    events = load_events_from_dir(dirname)
+    plot_timeline(dirname, events)

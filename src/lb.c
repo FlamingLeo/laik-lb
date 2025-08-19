@@ -48,7 +48,7 @@ static void min_max_mean(double *times, int gsize, double *maxdt, double *mean)
 // print times (elements in weight array starting at offset size) since last rebalance
 static void print_times(double *times, int gsize, double maxdt, double mean)
 {
-    printf("[LAIK-LB] times in s since first call: [");
+    printf("[LAIK-LB] times in s for this segment: [");
     for (int i = 0; i < gsize; ++i)
     {
         printf("%.2f", times[i]);

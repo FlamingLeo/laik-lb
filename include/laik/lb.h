@@ -3,6 +3,11 @@
  * 
  * No copyright notice for now I suppose.
  */
+
+ 
+#ifndef LAIK_LB_H
+#define LAIK_LB_H
+
 #include "core.h"
 #include "space.h"
 
@@ -56,3 +61,5 @@ Laik_Partitioner *laik_new_rcb_partitioner(double *weights);
 // returns null for the starting call, the same partitioning if nothing was changed (do not free this if you intend on using it afterwards!)
 // or a different partitioning if something changed
 Laik_Partitioning *laik_lb_balance(Laik_LBState state, Laik_Partitioning *partitioning, Laik_LBAlgorithm algorithm /*, double threshold*/);
+
+#endif

@@ -45,6 +45,7 @@
 ../include/laik/core-internal.h
 ../include/laik/data.h
 ../include/laik/lb.h
+../include/laik/lb-vis.h
 ../include/laik/data-internal.h
 ../include/laik/debug.h
 ../include/laik/definitions.h

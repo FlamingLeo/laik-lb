@@ -25,28 +25,8 @@
 #include <stdint.h>
 #include <sys/time.h>
 
-#define FILENAME "lbviz/array_data.txt"
-
 // fixed boundary values
 double loValue = -5.0, hiValue = 10.0;
-
-// ##################################
-static void export_to_file(uint64_t size, double* baseW)
-{
-    FILE *fp = fopen(FILENAME, "w");
-    if (!fp) return;
-
-    for(uint64_t i = 0; i < size; i++)
-        fprintf(fp, "(%ld, %.2f)\n", i, baseW[i]);
-
-    fclose(fp);     
-}
-
-static void visualize()
-{
-    system("python3 lbviz/visualize.py");
-}
-// ##################################
 
 double wtime()
 {
@@ -176,9 +156,6 @@ int main(int argc, char* argv[])
 
     printf("Global value sum after %d iterations: %f\n",
            iter, sum);
-           
-    export_to_file(size, baseW);
-    visualize();
 
     free(data1);
     free(data2);

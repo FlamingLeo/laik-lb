@@ -23,6 +23,7 @@
 #include "laik/space.h"
 #include "laik/data.h"
 #include "laik/lb.h"
+#include "laik/lb-vis.h"
 #include "laik/action.h"
 #include "laik/debug.h"
 #include "laik/program.h"

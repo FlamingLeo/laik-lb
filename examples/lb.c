@@ -8,92 +8,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#define FILENAME "lbviz/array_data.txt"
-#define DO_VISUALIZATION
-
-#ifdef DO_VISUALIZATION
-#define EXPORT_TO_FILE(_id, _part)                              \
-    if (_id == 0)                                               \
-    {                                                           \
-        Laik_RangeList *lr = laik_partitioning_myranges(_part); \
-        export_to_file(lr);                                     \
-    }
-#define VISUALIZE(_id) \
-    if (_id == 0)      \
-        visualize();
-#else
-#define EXPORT_TO_FILE(_id, _part) (void)0
-#define VISUALIZE(_id) (void)0
-#endif
-
-// export indices associated with tasks to newline-separated file for visualization purposes
-//
-// format:
-// - 1d: (idx, task)\n
-// - 2d: ((x,y), task)\n
-//
-// note: there's better, more efficient ways of storing and communicating this data to the python script
-//       this is mainly here for debugging right now
-// TODO: ideally call this + visualization script somehow after each iteration to view progress, avoiding I/O slowdown if possible (extra thread / proc?)
-static void export_to_file(Laik_RangeList *lr)
-{
-    FILE *fp = fopen(FILENAME, "w");
-    if (!fp)
-        return;
-
-    int dims = lr->space->dims;
-    for (size_t i = 0; i < lr->count; ++i)
-    {
-        Laik_Range r = lr->trange[i].range;
-        int task = lr->trange[i].task;
-
-        if (dims == 1)
-        {
-            int64_t from = r.from.i[0];
-            int64_t to = r.to.i[0];
-
-            for (int64_t j = from; j < to; ++j)
-                fprintf(fp, "(%ld,%d)\n", j, task);
-        }
-        else if (dims == 2)
-        {
-            int64_t from_x = r.from.i[0], from_y = r.from.i[1];
-            int64_t to_x = r.to.i[0], to_y = r.to.i[1];
-
-            for (int64_t x = from_x; x < to_x; ++x)
-                for (int64_t y = from_y; y < to_y; ++y)
-                    fprintf(fp, "((%ld,%ld),%d)\n", x, y, task);
-        }
-    }
-
-    fclose(fp);
-}
-
-// call task visualization script from inside example directory automatically; no error checking for now
-static void visualize()
-{
-    system("python3 lbviz/visualize.py");
-}
-
-// purge json data and images
-static void remove_plots()
-{
-    system("../scripts/remove_plots.sh");
-}
-
-// plot program trace through external script
-static void save_trace()
-{
-    system("python3 lbviz/trace.py");
-}
-
-// enable program trace visualization
-static void enable_trace(int id, Laik_Instance *inst)
-{
-    char filename[MAX_FILENAME_LENGTH];
-    sprintf(filename, "lbviz/lb-%d.json", id);
-    laik_svg_enable_profiling(inst, filename);
-}
+#define CSVNAME "array_data.csv"
 
 ////////////////////////
 // iteration examples //
@@ -108,7 +23,7 @@ int main_1d(int argc, char *argv[], int64_t spsize, int lcount)
     int id = laik_myid(world);
     Laik_LBAlgorithm lbalg = LB_RCB;
 
-    enable_trace(id, inst);
+    laik_lbvis_enable_trace(id, inst);
     laik_svg_profiler_enter(inst, __func__);
 
     if (id == 0)
@@ -161,15 +76,22 @@ int main_1d(int argc, char *argv[], int64_t spsize, int lcount)
     }
 
     // visualize task ranges
-    EXPORT_TO_FILE(id, part);
-    VISUALIZE(id);
+    if (getenv("LAIK_VIS"))
+    {
+        if (id == 0)
+        {
+            Laik_RangeList *lr = laik_partitioning_myranges(part);
+            laik_lbvis_export_partitioning(CSVNAME, lr);
+            laik_lbvis_visualize_partitioning(CSVNAME);
+        }
+    }
 
     // done
     laik_svg_profiler_exit(inst, __func__);
     laik_svg_profiler_export_json(inst);
     laik_finalize(inst);
     if (id == 0)
-        save_trace();
+        laik_lbvis_save_trace();
     return 0;
 }
 
@@ -182,7 +104,7 @@ int main_2d(int argc, char *argv[], int64_t sdsize, int lcount)
     int id = laik_myid(world);
     Laik_LBAlgorithm lbalg = LB_HILBERT;
 
-    enable_trace(id, inst);
+    laik_lbvis_enable_trace(id, inst);
     laik_svg_profiler_enter(inst, __func__);
 
     if (id == 0)
@@ -237,15 +159,22 @@ int main_2d(int argc, char *argv[], int64_t sdsize, int lcount)
     }
 
     // visualize task ranges
-    EXPORT_TO_FILE(id, part);
-    VISUALIZE(id);
+    if (getenv("LAIK_VIS"))
+    {
+        if (id == 0)
+        {
+            Laik_RangeList *lr = laik_partitioning_myranges(part);
+            laik_lbvis_export_partitioning(CSVNAME, lr);
+            laik_lbvis_visualize_partitioning(CSVNAME);
+        }
+    }
 
     // done
     laik_svg_profiler_exit(inst, __func__);
     laik_svg_profiler_export_json(inst);
     laik_finalize(inst);
     if (id == 0)
-        save_trace();
+        laik_lbvis_save_trace();
     return 0;
 }
 
@@ -257,7 +186,7 @@ int main_3d(int argc, char *argv[], int64_t sdsize, int lcount)
     int id = laik_myid(world);
     Laik_LBAlgorithm lbalg = LB_HILBERT;
 
-    enable_trace(id, inst);
+    laik_lbvis_enable_trace(id, inst);
     laik_svg_profiler_enter(inst, __func__);
 
     if (id == 0)
@@ -314,12 +243,23 @@ int main_3d(int argc, char *argv[], int64_t sdsize, int lcount)
         part = newpart;
     }
 
+    // visualize task ranges
+    if (getenv("LAIK_VIS"))
+    {
+        if (id == 0)
+        {
+            Laik_RangeList *lr = laik_partitioning_myranges(part);
+            laik_lbvis_export_partitioning(CSVNAME, lr);
+            laik_lbvis_visualize_partitioning(CSVNAME);
+        }
+    }
+
     // done
     laik_svg_profiler_exit(inst, __func__);
     laik_svg_profiler_export_json(inst);
     laik_finalize(inst);
     if (id == 0)
-        save_trace();
+        laik_lbvis_save_trace();
     return 0;
 }
 
@@ -330,7 +270,7 @@ int main_3d(int argc, char *argv[], int64_t sdsize, int lcount)
 int main(int argc, char *argv[])
 {
     // prepare program trace visualization
-    remove_plots();
+    laik_lbvis_remove_visdata();
 
     // example must be specified
     if (argc < 2)

@@ -38,73 +38,7 @@
 #define RES_ITER 10
 #define WL_LB_ITER 5
 #define LB_ALGO LB_HILBERT
-
-#define FILENAME "lbviz/array_data.txt"
-// #define DO_VISUALIZATION
-
-#ifdef DO_VISUALIZATION
-#define EXPORT_TO_FILE(_id, _part)                              \
-    if (_id == 0)                                               \
-    {                                                           \
-        Laik_RangeList *lr = laik_partitioning_myranges(_part); \
-        export_to_file(lr);                                     \
-    }
-#define VISUALIZE(_id) \
-    if (_id == 0)      \
-        visualize();
-#else
-#define EXPORT_TO_FILE(_id, _part) (void)0
-#define VISUALIZE(_id) (void)0
-#endif
-
-static void export_to_file(Laik_RangeList *lr)
-{
-    FILE *fp = fopen(FILENAME, "w");
-    if (!fp)
-        return;
-
-    int dims = lr->space->dims;
-    for (size_t i = 0; i < lr->count; ++i)
-    {
-        Laik_Range r = lr->trange[i].range;
-        int task = lr->trange[i].task;
-
-        if (dims == 1)
-        {
-            int64_t from = r.from.i[0];
-            int64_t to = r.to.i[0];
-
-            for (int64_t j = from; j < to; ++j)
-                fprintf(fp, "(%ld,%d)\n", j, task);
-        }
-        else if (dims == 2)
-        {
-            int64_t from_x = r.from.i[0], from_y = r.from.i[1];
-            int64_t to_x = r.to.i[0], to_y = r.to.i[1];
-
-            for (int64_t x = from_x; x < to_x; ++x)
-                for (int64_t y = from_y; y < to_y; ++y)
-                    fprintf(fp, "((%ld,%ld),%d)\n", x, y, task);
-        }
-    }
-
-    fclose(fp);
-}
-
-static void visualize()
-{
-    system("python3 lbviz/visualize.py");
-}
-
-static void remove_plots()
-{
-    system("../scripts/remove_plots.sh");
-}
-
-static void save_trace()
-{
-    system("python3 lbviz/trace.py");
-}
+#define CSVNAME "array_data.csv"
 
 #define WORKLOAD
 
@@ -196,7 +130,7 @@ void setBoundary(int size, Laik_Partitioning *pWrite, Laik_Data *dWrite, int ran
 
 int main(int argc, char *argv[])
 {
-    remove_plots();
+    laik_lbvis_remove_visdata();
     Laik_Instance *inst = laik_init(&argc, &argv);
     Laik_Group *world = laik_world(inst);
 
@@ -231,11 +165,7 @@ int main(int argc, char *argv[])
 #if PROFILING
     // start profiling interface
     if (do_profiling)
-    {
-        char filename[MAX_FILENAME_LENGTH];
-        sprintf(filename, "lbviz/jac2d-lb-%d.json", myid);
-        laik_svg_enable_profiling(inst, filename);
-    }
+        laik_lbvis_enable_trace(myid, inst);
 #endif
 
     double *baseR, *baseW, *sumPtr;
@@ -464,16 +394,21 @@ int main(int argc, char *argv[])
         }
     }
 
-    EXPORT_TO_FILE(myid, pWrite);
-    VISUALIZE(myid);
+    if (getenv("LAIK_VIS"))
+    {
+        if (myid == 0)
+        {
+            Laik_RangeList *lr = laik_partitioning_myranges(pWrite);
+            laik_lbvis_export_partitioning(CSVNAME, lr);
+            laik_lbvis_visualize_partitioning(CSVNAME);
+        }
+    }
 
     laik_svg_profiler_exit(inst, __func__);
     laik_svg_profiler_export_json(inst);
 
     laik_finalize(inst);
     if (do_profiling && myid == 0)
-    {
-        save_trace();
-    }
+        laik_lbvis_save_trace();
     return 0;
 }
