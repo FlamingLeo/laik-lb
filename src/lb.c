@@ -21,6 +21,13 @@ static const int log2_tab[64] = {
     56, 45, 25, 31, 35, 16, 9, 12,
     44, 24, 15, 8, 23, 7, 6, 5};
 
+// helper struct for SFC partitioner: algorithm + weights
+typedef struct
+{
+    double *weights;
+    Laik_LBAlgorithm algo;
+} LB_SFC_Data;
+
 //////////////////////////////
 // generic helper functions //
 //////////////////////////////
@@ -59,14 +66,14 @@ static void print_times(double *times, int gsize, double maxdt, double mean)
 }
 
 // check if a number is a power of 2
-static bool is_power_of_two(int64_t x)
-{
-    return (x != 0) && ((x & (x - 1)) == 0);
-}
+static inline bool is_power_of_two(int64_t x) { return (x != 0) && ((x & (x - 1)) == 0); }
+
+// get the sign of a 64-bit integer
+static inline int64_t sgn(int64_t num) { return (num > 0) - (num < 0); }
 
 // compute log2 for a 64-bit integer power of 2 using bitops and a LUT (cross-platform, compiler-/intrinsic-independent)
 // source: https://stackoverflow.com/questions/11376288/fast-computing-of-log2-for-64-bit-integers
-static int log2_int(uint64_t value)
+static inline int log2_int(uint64_t value)
 {
     assert(is_power_of_two(value));
 
@@ -92,15 +99,17 @@ static void *safe_malloc(size_t n)
 }
 
 // public: get algorithm enum from string
-// unknown algorithm -> fall back to hilbert sfc
+// unknown algorithm -> fall back to rcb
 Laik_LBAlgorithm laik_strtolb(const char *str)
 {
     if (strcmp(str, "rcb") == 0)
         return LB_RCB;
     else if (strcmp(str, "hilbert") == 0)
         return LB_HILBERT;
+    else if (strcmp(str, "gilbert") == 0)
+        return LB_GILBERT;
     else
-        return LB_HILBERT;
+        return LB_RCB;
 }
 
 // public: get algorithm string from enum
@@ -112,6 +121,8 @@ const char *laik_get_lb_algorithm_name(Laik_LBAlgorithm algo)
         return "rcb";
     case LB_HILBERT:
         return "hilbert";
+    case LB_GILBERT:
+        return "gilbert";
     default:
         return "unknown";
     }
@@ -382,8 +393,6 @@ static void merge_cuboids(int *grid1D, int64_t width, int64_t height, int64_t de
 // sfc partitioners //
 //////////////////////
 
-// TODO: make this work with domain sizes (sides) that are not powers of 2
-//       also possibly make it work for non-square (rectangular, w != h) domains?
 // TODO: consider allowing full 64-bit range for indices
 
 /* hilbert space filling curve (2D, 3D) using Skilling's bitwise method */
@@ -525,12 +534,443 @@ static inline void hilbert_d2xyz(int b, uint64_t d, uint64_t *x, uint64_t *y, ui
     *z = zz;
 }
 
+/*           gilbert (generalized Hilbert) (2D, 3D) by Jakub Červený           */
+/*          original C port by abetusk, 64-bit modification by myself          */
+/* source: https://github.com/jakubcerveny/gilbert/blob/master/ports/gilbert.c */
+
+// (tail-)recursive helper function for 2d gilbert
+//
+// note:  there are currently NO overflow checks, as the code has been adapted 1:1 for 64 bit signed ints
+//        be careful when using this with possibly large values!
+//        you could replace the binary operations here with own safe functions or compiler builtins
+//
+// note²: this is just some extra functionality and is not actually intended to be part of the final lb extension
+//        this function is also generally slower than the regular hilbert sfc, but this is only really meant to be used
+//        when the space size is not a square with side length a power of 2
+static uint64_t gilbert_d2xy_r(uint64_t dst_idx, uint64_t cur_idx,
+                               int64_t *xres, int64_t *yres,
+                               int64_t ax, int64_t ay,
+                               int64_t bx, int64_t by)
+{
+    uint64_t nxt_idx;
+    int64_t w, h, x, y, dax, day, dbx, dby, di;
+    int64_t ax2, ay2, bx2, by2, w2, h2;
+
+    w = llabs(ax + ay), h = llabs(bx + by);
+    x = *xres;
+    y = *yres;
+    dax = sgn(ax), day = sgn(ay); // unit major direction
+    dbx = sgn(bx), dby = sgn(by); // unit orthogonal direction
+    di = dst_idx - cur_idx;
+
+    if (h == 1)
+    {
+        *xres = x + dax * di;
+        *yres = y + day * di;
+        return 0;
+    }
+
+    if (w == 1)
+    {
+        *xres = x + dbx * di;
+        *yres = y + dby * di;
+        return 0;
+    }
+
+    // halve (floored)
+    ax2 = ax >> 1;
+    ay2 = ay >> 1;
+    bx2 = bx >> 1;
+    by2 = by >> 1;
+    w2 = llabs(ax2 + ay2);
+    h2 = llabs(bx2 + by2);
+
+    if ((2 * w) > (3 * h))
+    {
+        if ((w2 & 1) && (w > 2))
+        {
+            // prefer even steps
+            ax2 += dax;
+            ay2 += day;
+        }
+
+        // long case: split in two parts only
+        nxt_idx = (uint64_t)(cur_idx + llabs((ax2 + ay2) * (bx + by)));
+        if ((cur_idx <= dst_idx) && (dst_idx < nxt_idx))
+        {
+            *xres = x;
+            *yres = y;
+            return gilbert_d2xy_r(dst_idx, cur_idx, xres, yres, ax2, ay2, bx, by);
+        }
+        cur_idx = nxt_idx;
+
+        *xres = x + ax2;
+        *yres = y + ay2;
+        return gilbert_d2xy_r(dst_idx, cur_idx, xres, yres, ax - ax2, ay - ay2, bx, by);
+    }
+
+    if ((h2 & 1) && (h > 2))
+    {
+        // prefer even steps
+        bx2 += dbx;
+        by2 += dby;
+    }
+
+    // standard case: one step up, one long horizontal, one step down
+    nxt_idx = (uint64_t)(cur_idx + llabs((bx2 + by2) * (ax2 + ay2)));
+    if ((cur_idx <= dst_idx) && (dst_idx < nxt_idx))
+    {
+        *xres = x;
+        *yres = y;
+        return gilbert_d2xy_r(dst_idx, cur_idx, xres, yres, bx2, by2, ax2, ay2);
+    }
+    cur_idx = nxt_idx;
+
+    nxt_idx = (uint64_t)(cur_idx + llabs((ax + ay) * ((bx - bx2) + (by - by2))));
+    if ((cur_idx <= dst_idx) && (dst_idx < nxt_idx))
+    {
+        *xres = x + bx2;
+        *yres = y + by2;
+        return gilbert_d2xy_r(dst_idx, cur_idx, xres, yres, ax, ay, bx - bx2, by - by2);
+    }
+    cur_idx = nxt_idx;
+
+    *xres = x + (ax - dax) + (bx2 - dbx);
+    *yres = y + (ay - day) + (by2 - dby);
+    return gilbert_d2xy_r(dst_idx, cur_idx,
+                          xres, yres,
+                          -bx2, -by2,
+                          -(ax - ax2), -(ay - ay2));
+}
+
+// d -> (x,y) on a gilbert curve for an arbitrary 2D domain
+static int64_t gilbert_d2xy(int64_t *x, int64_t *y, uint64_t idx, int64_t w, int64_t h)
+{
+    *x = 0;
+    *y = 0;
+
+    if (w >= h)
+        return gilbert_d2xy_r(idx, 0, x, y, w, 0, 0, h);
+    return gilbert_d2xy_r(idx, 0, x, y, 0, h, w, 0);
+}
+
+// (tail-)recursive helper function for 3d gilbert
+//
+// sames notes and caveats as 2d version (no overflow checks, slightly slower, not preferred for square / cubic domains with side length power of 2...)
+int64_t gilbert_d2xyz_r(uint64_t dst_idx, uint64_t cur_idx,
+                        int64_t *xres, int64_t *yres, int64_t *zres,
+                        int64_t ax, int64_t ay, int64_t az,
+                        int64_t bx, int64_t by, int64_t bz,
+                        int64_t cx, int64_t cy, int64_t cz)
+{
+    uint64_t nxt_idx;
+    uint64_t _di;
+    int64_t x, y, z;
+
+    int64_t w, h, d;
+    int64_t w2, h2, d2;
+
+    int64_t dax, day, daz,
+        dbx, dby, dbz,
+        dcx, dcy, dcz;
+    int64_t ax2, ay2, az2,
+        bx2, by2, bz2,
+        cx2, cy2, cz2;
+
+    x = *xres;
+    y = *yres;
+    z = *zres;
+
+    w = llabs(ax + ay + az);
+    h = llabs(bx + by + bz);
+    d = llabs(cx + cy + cz);
+
+    dax = sgn(ax), day = sgn(ay), daz = sgn(az); // unit major direction "right"
+    dbx = sgn(bx), dby = sgn(by), dbz = sgn(bz); // unit ortho direction "forward"
+    dcx = sgn(cx), dcy = sgn(cy), dcz = sgn(cz); // unit ortho direction "up"
+
+    _di = dst_idx - cur_idx;
+
+    // trivial row/column fills
+    if ((h == 1) && (d == 1))
+    {
+        *xres = x + dax * (int64_t)_di;
+        *yres = y + day * (int64_t)_di;
+        *zres = z + daz * (int64_t)_di;
+        return 0;
+    }
+
+    if ((w == 1) && (d == 1))
+    {
+        *xres = x + dbx * (int64_t)_di;
+        *yres = y + dby * (int64_t)_di;
+        *zres = z + dbz * (int64_t)_di;
+        return 0;
+    }
+
+    if ((w == 1) && (h == 1))
+    {
+        *xres = x + dcx * (int64_t)_di;
+        *yres = y + dcy * (int64_t)_di;
+        *zres = z + dcz * (int64_t)_di;
+        return 0;
+    }
+
+    ax2 = ax >> 1;
+    ay2 = ay >> 1;
+    az2 = az >> 1;
+
+    bx2 = bx >> 1;
+    by2 = by >> 1;
+    bz2 = bz >> 1;
+
+    cx2 = cx >> 1;
+    cy2 = cy >> 1;
+    cz2 = cz >> 1;
+
+    w2 = llabs(ax2 + ay2 + az2);
+    h2 = llabs(bx2 + by2 + bz2);
+    d2 = llabs(cx2 + cy2 + cz2);
+
+    // prefer even steps
+    if ((w2 & 1) && (w > 2))
+    {
+        ax2 += dax;
+        ay2 += day;
+        az2 += daz;
+    }
+    if ((h2 & 1) && (h > 2))
+    {
+        bx2 += dbx;
+        by2 += dby;
+        bz2 += dbz;
+    }
+    if ((d2 & 1) && (d > 2))
+    {
+        cx2 += dcx;
+        cy2 += dcy;
+        cz2 += dcz;
+    }
+
+    // wide case, split in w only
+    if (((2 * w) > (3 * h)) && ((2 * w) > (3 * d)))
+    {
+        nxt_idx = (uint64_t)(cur_idx + llabs((ax2 + ay2 + az2) * (bx + by + bz) * (cx + cy + cz)));
+        if ((cur_idx <= dst_idx) && (dst_idx < nxt_idx))
+        {
+            *xres = x;
+            *yres = y;
+            *zres = z;
+            return gilbert_d2xyz_r(dst_idx, cur_idx,
+                                   xres, yres, zres,
+                                   ax2, ay2, az2,
+                                   bx, by, bz,
+                                   cx, cy, cz);
+        }
+        cur_idx = nxt_idx;
+
+        *xres = x + ax2;
+        *yres = y + ay2;
+        *zres = z + az2;
+        return gilbert_d2xyz_r(dst_idx, cur_idx,
+                               xres, yres, zres,
+                               ax - ax2, ay - ay2, az - az2,
+                               bx, by, bz,
+                               cx, cy, cz);
+    }
+
+    // do not split in d
+    else if ((3 * h) > (4 * d))
+    {
+        nxt_idx = (uint64_t)(cur_idx + llabs((bx2 + by2 + bz2) * (cx + cy + cz) * (ax2 + ay2 + az2)));
+        if ((cur_idx <= dst_idx) && (dst_idx < nxt_idx))
+        {
+            *xres = x;
+            *yres = y;
+            *zres = z;
+            return gilbert_d2xyz_r(dst_idx, cur_idx,
+                                   xres, yres, zres,
+                                   bx2, by2, bz2,
+                                   cx, cy, cz,
+                                   ax2, ay2, az2);
+        }
+        cur_idx = nxt_idx;
+
+        nxt_idx = (uint64_t)(cur_idx + llabs((ax + ay + az) * ((bx - bx2) + (by - by2) + (bz - bz2)) * (cx + cy + cz)));
+        if ((cur_idx <= dst_idx) && (dst_idx < nxt_idx))
+        {
+            *xres = x + bx2;
+            *yres = y + by2;
+            *zres = z + bz2;
+            return gilbert_d2xyz_r(dst_idx, cur_idx,
+                                   xres, yres, zres,
+                                   ax, ay, az,
+                                   bx - bx2, by - by2, bz - bz2,
+                                   cx, cy, cz);
+        }
+        cur_idx = nxt_idx;
+
+        *xres = x + (ax - dax) + (bx2 - dbx);
+        *yres = y + (ay - day) + (by2 - dby);
+        *zres = z + (az - daz) + (bz2 - dbz);
+
+        return gilbert_d2xyz_r(dst_idx, cur_idx,
+                               xres, yres, zres,
+                               -bx2, -by2, -bz2,
+                               cx, cy, cz,
+                               -(ax - ax2), -(ay - ay2), -(az - az2));
+    }
+
+    // do not split in h
+    else if ((3 * d) > (4 * h))
+    {
+        nxt_idx = (uint64_t)(cur_idx + llabs((cx2 + cy2 + cz2) * (ax2 + ay2 + az2) * (bx + by + bz)));
+        if ((cur_idx <= dst_idx) && (dst_idx < nxt_idx))
+        {
+            *xres = x;
+            *yres = y;
+            *zres = z;
+            return gilbert_d2xyz_r(dst_idx, cur_idx,
+                                   xres, yres, zres,
+                                   cx2, cy2, cz2,
+                                   ax2, ay2, az2,
+                                   bx, by, bz);
+        }
+        cur_idx = nxt_idx;
+
+        nxt_idx = (uint64_t)(cur_idx + llabs((ax + ay + az) * (bx + by + bz) * ((cx - cx2) + (cy - cy2) + (cz - cz2))));
+        if ((cur_idx <= dst_idx) && (dst_idx < nxt_idx))
+        {
+            *xres = x + cx2;
+            *yres = y + cy2;
+            *zres = z + cz2;
+            return gilbert_d2xyz_r(dst_idx, cur_idx,
+                                   xres, yres, zres,
+                                   ax, ay, az,
+                                   bx, by, bz,
+                                   cx - cx2, cy - cy2, cz - cz2);
+        }
+        cur_idx = nxt_idx;
+
+        *xres = x + (ax - dax) + (cx2 - dcx);
+        *yres = y + (ay - day) + (cy2 - dcy);
+        *zres = z + (az - daz) + (cz2 - dcz);
+
+        return gilbert_d2xyz_r(dst_idx, cur_idx,
+                               xres, yres, zres,
+                               -cx2, -cy2, -cz2,
+                               -(ax - ax2), -(ay - ay2), -(az - az2),
+                               bx, by, bz);
+    }
+
+    // regular case, split in all w/h/d
+    nxt_idx = (uint64_t)(cur_idx + llabs((bx2 + by2 + bz2) * (cx2 + cy2 + cz2) * (ax2 + ay2 + az2)));
+    if ((cur_idx <= dst_idx) && (dst_idx < nxt_idx))
+    {
+        *xres = x;
+        *yres = y;
+        *zres = z;
+        return gilbert_d2xyz_r(dst_idx, cur_idx,
+                               xres, yres, zres,
+                               bx2, by2, bz2,
+                               cx2, cy2, cz2,
+                               ax2, ay2, az2);
+    }
+    cur_idx = nxt_idx;
+
+    nxt_idx = (uint64_t)(cur_idx + llabs((cx + cy + cz) * (ax2 + ay2 + az2) * ((bx - bx2) + (by - by2) + (bz - bz2))));
+    if ((cur_idx <= dst_idx) && (dst_idx < nxt_idx))
+    {
+        *xres = x + bx2;
+        *yres = y + by2;
+        *zres = z + bz2;
+        return gilbert_d2xyz_r(dst_idx, cur_idx,
+                               xres, yres, zres,
+                               cx, cy, cz,
+                               ax2, ay2, az2,
+                               bx - bx2, by - by2, bz - bz2);
+    }
+    cur_idx = nxt_idx;
+
+    nxt_idx = (uint64_t)(cur_idx + llabs((ax + ay + az) * (-bx2 - by2 - bz2) * (-(cx - cx2) - (cy - cy2) - (cz - cz2))));
+    if ((cur_idx <= dst_idx) && (dst_idx < nxt_idx))
+    {
+        *xres = x + (bx2 - dbx) + (cx - dcx);
+        *yres = y + (by2 - dby) + (cy - dcy);
+        *zres = z + (bz2 - dbz) + (cz - dcz);
+        return gilbert_d2xyz_r(dst_idx, cur_idx,
+                               xres, yres, zres,
+                               ax, ay, az,
+                               -bx2, -by2, -bz2,
+                               -(cx - cx2), -(cy - cy2), -(cz - cz2));
+    }
+    cur_idx = nxt_idx;
+
+    nxt_idx = (uint64_t)(cur_idx + llabs((-cx - cy - cz) * (-(ax - ax2) - (ay - ay2) - (az - az2)) * ((bx - bx2) + (by - by2) + (bz - bz2))));
+    if ((cur_idx <= dst_idx) && (dst_idx < nxt_idx))
+    {
+        *xres = x + (ax - dax) + bx2 + (cx - dcx);
+        *yres = y + (ay - day) + by2 + (cy - dcy);
+        *zres = z + (az - daz) + bz2 + (cz - dcz);
+        return gilbert_d2xyz_r(dst_idx, cur_idx,
+                               xres, yres, zres,
+                               -cx, -cy, -cz,
+                               -(ax - ax2), -(ay - ay2), -(az - az2),
+                               bx - bx2, by - by2, bz - bz2);
+    }
+    cur_idx = nxt_idx;
+
+    *xres = x + (ax - dax) + (bx2 - dbx);
+    *yres = y + (ay - day) + (by2 - dby);
+    *zres = z + (az - daz) + (bz2 - dbz);
+    return gilbert_d2xyz_r(dst_idx, cur_idx,
+                           xres, yres, zres,
+                           -bx2, -by2, -bz2,
+                           cx2, cy2, cz2,
+                           -(ax - ax2), -(ay - ay2), -(az - az2));
+}
+
+// d -> (x,y,z) on a gilbert curve for an arbitrary 3d domain
+// note: no overflow checks!
+int64_t gilbert_d2xyz(int64_t *x, int64_t *y, int64_t *z, uint64_t idx, int64_t width, int64_t height, int64_t depth)
+{
+    *x = 0;
+    *y = 0;
+    *z = 0;
+
+    if ((width >= height) && (width >= depth))
+    {
+        return gilbert_d2xyz_r(idx, 0,
+                               x, y, z,
+                               width, 0, 0,
+                               0, height, 0,
+                               0, 0, depth);
+    }
+    else if ((height >= width) && (height >= depth))
+    {
+        return gilbert_d2xyz_r(idx, 0,
+                               x, y, z,
+                               0, height, 0,
+                               width, 0, 0,
+                               0, 0, depth);
+    }
+
+    // depth >= width and depth >= height
+    return gilbert_d2xyz_r(idx, 0,
+                           x, y, z,
+                           0, 0, depth,
+                           width, 0, 0,
+                           0, height, 0);
+}
+
 // ------------------------- //
 // laik functions start here //
 // ------------------------- //
 
-// internal 2d hilbert sfc helper function
-static void hilbert_2d(Laik_RangeReceiver *r, Laik_PartitionerParams *p, double *weights)
+// TODO: verify types for both
+
+// internal 2d sfc helper function
+static void sfc_2d(Laik_RangeReceiver *r, Laik_PartitionerParams *p, double *weights, Laik_LBAlgorithm algo)
 {
     Laik_Instance *inst = r->params->space->inst;
     laik_svg_profiler_enter(inst, __func__);
@@ -540,15 +980,14 @@ static void hilbert_2d(Laik_RangeReceiver *r, Laik_PartitionerParams *p, double 
     Laik_Space *space = p->space;
     Laik_Range range = space->range;
 
-    // validate square domain with side as a power of 2
     int64_t size_x = range.to.i[0] - range.from.i[0];
     int64_t size_y = range.to.i[1] - range.from.i[1];
-    assert(size_x > 0 && size_y > 0 && size_x == size_y && is_power_of_two(size_x) && is_power_of_two(size_y) && "hilbert curve requires square domain with side length power of two");
+
+    // validate square domain with side as a power of 2 for hilbert curve
+    if (algo == LB_HILBERT)
+        assert(size_x > 0 && size_y > 0 && size_x == size_y && is_power_of_two(size_x) && is_power_of_two(size_y) && "hilbert curve requires square domain with side length power of two");
 
     // compute total weight (d2xy not needed here, since traversal order doesn't matter)
-    int b = log2_int(size_x);                                     // side length 2^b, valid domains: [2^1, 2^1] -> [2^32, 2^32] in increments of consecutive powers of 2
-    assert((b > 0 && b <= 32) && "b not in valid range [1, 32]"); // 2 * b <= 64
-
     uint64_t N = (uint64_t)size_x * (uint64_t)size_y; // uint64_t to cover full range (incl. exactly 2^32)
     double total_w = 0.0;
 
@@ -564,26 +1003,54 @@ static void hilbert_2d(Laik_RangeReceiver *r, Laik_PartitionerParams *p, double 
     // allocate index-to-task mapping array
     int *idxGrid = (int *)safe_malloc(N * sizeof(int));
 
-    laik_log(1, "lb/hilbert_2d: allocated %ld bytes (%f kB) for index grid\n", N * sizeof(int), .001 * N * sizeof(int));
-    laik_log(1, "lb/hilbert_2d: size %ld, totalw %f, targetw %f for %d procs\n", N, total_w, target, tidcount);
+    laik_log(1, "lb/sfc_2d: allocated %ld bytes (%f kB) for index grid\n", N * sizeof(int), .001 * N * sizeof(int));
+    laik_log(1, "lb/sfc_2d: size %ld, totalw %f, targetw %f for %d procs\n", N, total_w, target, tidcount);
 
-    // scan hilbert curve and partition based on prefix sum
-    for (uint64_t m = 0; m < N; ++m)
+    // scan curve and partition based on prefix sum
+    // repeated code, done to avoid constantly checking algorithm inside for loop
+    if (algo == LB_HILBERT)
     {
-        uint64_t x, y;
-        hilbert_d2xy(b, m, &x, &y);
-        sum += get_idx_weight_2d(weights, size_x, (int64_t)x, (int64_t)y); // casts are safe to do here, since x and y must be positive and can't exceed 2^32 each
-        idxGrid[y * size_x + x] = task;
+        int b = log2_int(size_x);                                     // side length 2^b, valid domains: [2^1, 2^1] -> [2^32, 2^32] in increments of consecutive powers of 2
+        assert((b > 0 && b <= 32) && "b not in valid range [1, 32]"); // 2 * b <= 64
 
-        // target reached: move to next (?) task
-        if (sum >= target)
+        for (uint64_t m = 0; m < N; ++m)
         {
-            laik_log(1, "lb/hilbert_2d: found split at [x:%ld, y:%ld] for task %d (sum: %f, target %f)\n", x, y, task, sum, target);
+            uint64_t x, y;
+            hilbert_d2xy(b, m, &x, &y);
+            sum += get_idx_weight_2d(weights, size_x, (int64_t)x, (int64_t)y);
+            idxGrid[y * size_x + x] = task;
 
-            // reset for next task (cap to last index)
-            if (task < tidcount - 1)
-                task++;
-            sum = 0.0;
+            // target reached: move to next (?) task
+            if (sum >= target)
+            {
+                laik_log(1, "lb/sfc_2d/hilbert: found split at [x:%ld, y:%ld] for task %d (sum: %f, target %f)\n", x, y, task, sum, target);
+
+                // reset for next task (cap to last index)
+                if (task < tidcount - 1)
+                    task++;
+                sum = 0.0;
+            }
+        }
+    }
+    else /* if (algo == LB_GILBERT) */
+    {
+        for (uint64_t m = 0; m < N; ++m)
+        {
+            int64_t x, y;
+            gilbert_d2xy(&x, &y, m, size_x, size_y); // no overflow checks
+            sum += get_idx_weight_2d(weights, size_x, x, y);
+            idxGrid[y * size_x + x] = task;
+
+            // target reached: move to next (?) task
+            if (sum >= target)
+            {
+                laik_log(1, "lb/sfc_2d/gilbert: found split at [x:%ld, y:%ld] for task %d (sum: %f, target %f)\n", x, y, task, sum, target);
+
+                // reset for next task (cap to last index)
+                if (task < tidcount - 1)
+                    task++;
+                sum = 0.0;
+            }
         }
     }
 
@@ -596,8 +1063,8 @@ static void hilbert_2d(Laik_RangeReceiver *r, Laik_PartitionerParams *p, double 
     laik_svg_profiler_exit(inst, __func__);
 }
 
-// internal 3d hilbert sfc helper function
-static void hilbert_3d(Laik_RangeReceiver *r, Laik_PartitionerParams *p, double *weights)
+// internal 3d sfc helper function
+static void sfc_3d(Laik_RangeReceiver *r, Laik_PartitionerParams *p, double *weights, Laik_LBAlgorithm algo)
 {
     Laik_Instance *inst = r->params->space->inst;
     laik_svg_profiler_enter(inst, __func__);
@@ -607,16 +1074,15 @@ static void hilbert_3d(Laik_RangeReceiver *r, Laik_PartitionerParams *p, double 
     Laik_Space *space = p->space;
     Laik_Range range = space->range;
 
-    // validate square domain with side as a power of 2
     int64_t size_x = range.to.i[0] - range.from.i[0];
     int64_t size_y = range.to.i[1] - range.from.i[1];
     int64_t size_z = range.to.i[2] - range.from.i[2];
-    assert(size_x > 0 && size_y > 0 && size_z > 0 && size_x == size_y && size_y == size_z && is_power_of_two(size_x) && is_power_of_two(size_y) && is_power_of_two(size_z) && "hilbert curve requires cube domain with side length power of two");
+
+    // validate cubic domain with side as a power of 2
+    if (algo == LB_HILBERT)
+        assert(size_x > 0 && size_y > 0 && size_z > 0 && size_x == size_y && size_y == size_z && is_power_of_two(size_x) && is_power_of_two(size_y) && is_power_of_two(size_z) && "hilbert curve requires cube domain with side length power of two");
 
     // compute total weight (d2xy not needed here, since traversal order doesn't matter)
-    int b = log2_int(size_x);                                     // side length 2^b, valid domains: [2^1, 2^1] -> [2^21, 2^21] in increments of consecutive powers of 2
-    assert((b > 0 && b <= 21) && "b not in valid range [1, 21]"); // 3 * b <= 64, floored
-
     uint64_t N = (uint64_t)size_x * (uint64_t)size_y * (uint64_t)size_z; // uint64_t to cover full range (incl. exactly 2^32)
     double total_w = 0.0;
 
@@ -633,26 +1099,53 @@ static void hilbert_3d(Laik_RangeReceiver *r, Laik_PartitionerParams *p, double 
     // allocate index-to-task mapping array
     int *idxGrid = (int *)safe_malloc(N * sizeof(int));
 
-    laik_log(1, "lb/hilbert_3d: allocated %ld bytes (%f kB) for index grid\n", N * sizeof(int), .001 * N * sizeof(int));
-    laik_log(1, "lb/hilbert_3d: size %ld, totalw %f, targetw %f for %d procs\n", N, total_w, target, tidcount);
+    laik_log(1, "lb/sfc_3d: allocated %ld bytes (%f kB) for index grid\n", N * sizeof(int), .001 * N * sizeof(int));
+    laik_log(1, "lb/sfc_3d: size %ld, totalw %f, targetw %f for %d procs\n", N, total_w, target, tidcount);
 
     // scan hilbert curve and partition based on prefix sum
-    for (uint64_t m = 0; m < N; ++m)
+    if (algo == LB_HILBERT)
     {
-        uint64_t x, y, z;
-        hilbert_d2xyz(b, m, &x, &y, &z);
-        sum += get_idx_weight_3d(weights, size_x, size_y, x, y, z); // casts are safe to do here, since x and y must be positive and can't exceed 2^21 each
-        idxGrid[x + size_x * (y + size_y * z)] = task;
+        int b = log2_int(size_x);                                     // side length 2^b, valid domains: [2^1, 2^1] -> [2^21, 2^21] in increments of consecutive powers of 2
+        assert((b > 0 && b <= 21) && "b not in valid range [1, 21]"); // 3 * b <= 64, floored
 
-        // target reached: move to next (?) task
-        if (sum >= target)
+        for (uint64_t m = 0; m < N; ++m)
         {
-            laik_log(1, "lb/hilbert_3d: found split at [x:%ld, y:%ld, z:%ld] for task %d (sum: %f, target %f)\n", x, y, z, task, sum, target);
+            uint64_t x, y, z;
+            hilbert_d2xyz(b, m, &x, &y, &z);
+            sum += get_idx_weight_3d(weights, size_x, size_y, (int64_t)x, (int64_t)y, (int64_t)z);
+            idxGrid[x + size_x * (y + size_y * z)] = task;
 
-            // reset for next task (cap to last index)
-            if (task < tidcount - 1)
-                task++;
-            sum = 0.0;
+            // target reached: move to next (?) task
+            if (sum >= target)
+            {
+                laik_log(1, "lb/sfc_3d/hilbert: found split at [x:%ld, y:%ld, z:%ld] for task %d (sum: %f, target %f)\n", x, y, z, task, sum, target);
+
+                // reset for next task (cap to last index)
+                if (task < tidcount - 1)
+                    task++;
+                sum = 0.0;
+            }
+        }
+    }
+    else /* if (algo == LB_GILBERT) */
+    {
+        for (uint64_t m = 0; m < N; ++m)
+        {
+            int64_t x, y, z;
+            gilbert_d2xyz(&x, &y, &z, m, size_x, size_y, size_z);
+            sum += get_idx_weight_3d(weights, size_x, size_y, x, y, z);
+            idxGrid[x + size_x * (y + size_y * z)] = task;
+
+            // target reached: move to next (?) task
+            if (sum >= target)
+            {
+                laik_log(1, "lb/sfc_3d/gilbert: found split at [x:%ld, y:%ld, z:%ld] for task %d (sum: %f, target %f)\n", x, y, z, task, sum, target);
+
+                // reset for next task (cap to last index)
+                if (task < tidcount - 1)
+                    task++;
+                sum = 0.0;
+            }
         }
     }
 
@@ -669,30 +1162,39 @@ static void hilbert_3d(Laik_RangeReceiver *r, Laik_PartitionerParams *p, double 
 // laik functions start here //
 // ------------------------- //
 
-void runHilbertPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams *p)
+void runSFCPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams *p)
 {
     Laik_Instance *inst = p->space->inst;
     laik_svg_profiler_enter(inst, __func__);
 
     int dims = p->space->dims;
-    double *weights = (double *)p->partitioner->data;
+    LB_SFC_Data *data = (LB_SFC_Data *)p->partitioner->data;
+    double *weights = data->weights;
+    Laik_LBAlgorithm algo = data->algo;
+    free(data); // not needed anymore
 
     if (dims == 2)
-        hilbert_2d(r, p, weights);
+        sfc_2d(r, p, weights, algo);
     else if (dims == 3)
-        hilbert_3d(r, p, weights);
+        sfc_3d(r, p, weights, algo);
     else
     {
-        laik_panic("Unsupported dimensions for Hilbert partitioner (must be: 2 or 3)");
+        laik_panic("Unsupported dimensions for space-filling curve partitioner (must be: 2 or 3)");
         exit(EXIT_FAILURE);
     }
 
     laik_svg_profiler_exit(inst, __func__);
 }
 
-Laik_Partitioner *laik_new_hilbert_partitioner(double *weights)
+Laik_Partitioner *laik_new_sfc_partitioner(double *weights, Laik_LBAlgorithm algo)
 {
-    return laik_new_partitioner("hilbert", runHilbertPartitioner, (void *)weights, 0);
+    assert((algo != LB_RCB) && "that's not a space-filling curve!");
+
+    LB_SFC_Data *data = (LB_SFC_Data *)safe_malloc(sizeof(LB_SFC_Data));
+    data->weights = weights;
+    data->algo = algo;
+
+    return laik_new_partitioner(laik_get_lb_algorithm_name(algo), runSFCPartitioner, (void *)data, 0);
 }
 
 /////////////////////
@@ -1328,7 +1830,8 @@ Laik_Partitioning *laik_lb_balance(Laik_LBState state, Laik_Partitioning *partit
         nparter = laik_new_rcb_partitioner(weights);
         break;
     case LB_HILBERT:
-        nparter = laik_new_hilbert_partitioner(weights);
+    case LB_GILBERT:
+        nparter = laik_new_sfc_partitioner(weights, algorithm);
         break;
     default:
         laik_panic("Unknown / unimplemented load balancing algorithm!");

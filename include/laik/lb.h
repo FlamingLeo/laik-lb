@@ -22,7 +22,8 @@ typedef enum {
 // enum defining currently available load balancing algorithms
 typedef enum {
     LB_RCB,
-    LB_HILBERT
+    LB_HILBERT,
+    LB_GILBERT
 } Laik_LBAlgorithm;
 
 // get algorithm enum from string
@@ -35,11 +36,11 @@ const char *laik_get_lb_algorithm_name(Laik_LBAlgorithm algo);
 // sfc partitioners //
 //////////////////////
 
-// main hilbert curve function
-void runHilbertPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams *p);
+// main space-filling curve function
+void runSFCPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams *p);
 
-// create new hilbert curve partitioner
-Laik_Partitioner *laik_new_hilbert_partitioner(double *tweights);
+// create new space-filling curve partitioner
+Laik_Partitioner *laik_new_sfc_partitioner(double *weights, Laik_LBAlgorithm algo);
 
 /////////////////////
 // rcb partitioner //

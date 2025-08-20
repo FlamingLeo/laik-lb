@@ -15,14 +15,13 @@
 ////////////////////////
 
 // 1d example
-int main_1d(int argc, char *argv[], int64_t spsize, int lcount)
+int main_1d(int argc, char *argv[], int64_t spsize, int lcount, bool do_visualization)
 {
     // initialize 1d index space of size spsize, each task getting the same slice size
     Laik_Instance *inst = laik_init(&argc, &argv);
     Laik_Group *world = laik_world(inst);
     int id = laik_myid(world);
     Laik_LBAlgorithm lbalg = LB_RCB; // sfc incompatible
-    bool do_visualization = getenv("LAIK_VIS");
 
     laik_lbvis_enable_trace(id, inst);
     laik_svg_profiler_enter(inst, __func__);
@@ -99,13 +98,12 @@ int main_1d(int argc, char *argv[], int64_t spsize, int lcount)
 }
 
 // 2d example
-int main_2d(int argc, char *argv[], int64_t sdsize, int lcount, Laik_LBAlgorithm lbalg)
+int main_2d(int argc, char *argv[], int64_t sdsize, int lcount, Laik_LBAlgorithm lbalg, bool do_visualization)
 {
     // initialization
     Laik_Instance *inst = laik_init(&argc, &argv);
     Laik_Group *world = laik_world(inst);
     int id = laik_myid(world);
-    bool do_visualization = getenv("LAIK_VIS");
 
     laik_lbvis_enable_trace(id, inst);
     laik_svg_profiler_enter(inst, __func__);
@@ -183,12 +181,11 @@ int main_2d(int argc, char *argv[], int64_t sdsize, int lcount, Laik_LBAlgorithm
 }
 
 // 3d example
-int main_3d(int argc, char *argv[], int64_t sdsize, int lcount, Laik_LBAlgorithm lbalg)
+int main_3d(int argc, char *argv[], int64_t sdsize, int lcount, Laik_LBAlgorithm lbalg, bool do_visualization)
 {
     Laik_Instance *inst = laik_init(&argc, &argv);
     Laik_Group *world = laik_world(inst);
     int id = laik_myid(world);
-    bool do_visualization = getenv("LAIK_VIS");
 
     laik_lbvis_enable_trace(id, inst);
     laik_svg_profiler_enter(inst, __func__);
@@ -270,8 +267,7 @@ int main_3d(int argc, char *argv[], int64_t sdsize, int lcount, Laik_LBAlgorithm
 
 // choose example and parameters based on input
 //
-// USAGE: <mpirun -n x> ./lb [example] <spacesize> <loopcount>
-//   e.g:  mpirun -n 4  ./lb 1 250000 10
+// USAGE: <mpirun -n x> ./lb [example] <do_vis> <lb_algo> <spacesize> <loopcount>
 int main(int argc, char *argv[])
 {
     // prepare program trace visualization
@@ -287,30 +283,36 @@ int main(int argc, char *argv[])
         exit(1);
 
     // optional space size and loop count arguments
-    int64_t sidelen;
+    int64_t sidelen = 0;
     char *algo = NULL;
+    bool do_visualization = false;
     int lcount = 5; // loop count, increase this to test thresholds
     if (argc > 2)
-        algo = argv[2];
+        do_visualization = atoi(argv[2]);
     if (argc > 3)
-        sidelen = atoi(argv[3]);
+        algo = argv[3];
     if (argc > 4)
-        lcount = atoi(argv[4]);
+        sidelen = atoi(argv[4]);
+    if (argc > 5)
+        lcount = atoi(argv[5]);
 
     if (example == 1)
     {
-        sidelen = 1048576;
-        main_1d(argc, argv, sidelen, lcount /*, rcb obligatory*/);
+        if (sidelen == 0)
+            sidelen = 1048576;
+        main_1d(argc, argv, sidelen, lcount /*, rcb obligatory*/, do_visualization);
     }
     else if (example == 2)
     {
-        sidelen = 1024;
-        main_2d(argc, argv, sidelen, lcount, algo ? laik_strtolb(algo) : LB_HILBERT);
+        if (sidelen == 0)
+            sidelen = 1024;
+        main_2d(argc, argv, sidelen, lcount, algo ? laik_strtolb(algo) : LB_HILBERT, do_visualization);
     }
     else if (example == 3)
     {
-        sidelen = 64;
-        main_3d(argc, argv, sidelen, lcount, algo ? laik_strtolb(algo) : LB_HILBERT);
+        if (sidelen == 0)
+            sidelen = 64;
+        main_3d(argc, argv, sidelen, lcount, algo ? laik_strtolb(algo) : LB_HILBERT, do_visualization);
     }
     else
     {
