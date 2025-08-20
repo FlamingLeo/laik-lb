@@ -395,8 +395,10 @@ static void merge_cuboids(int *grid1D, int64_t width, int64_t height, int64_t de
 
 // TODO: consider allowing full 64-bit range for indices
 
-/* hilbert space filling curve (2D, 3D) using Skilling's bitwise method */
-/* -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-= 2D =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=- */
+/*            hilbert space filling curve (2D, 3D) using Skilling's bitwise method            */
+/* source:  Programming the Hilbert curve, John Skilling, AIP Conf. Proc. 707, 381–387 (2004) */
+/*                             http://doi.org/10.1063/1.1751381                               */
+
 // helper: rotate indices based on current (sub)quadrant
 //
 // rotate or reflect the coordinates x,y in-place for the sub-square of size s
@@ -453,7 +455,6 @@ static inline void hilbert_d2xy(unsigned b, uint64_t d, uint64_t *x, uint64_t *y
     }
 }
 
-/* -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-= 3D =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=- */
 // helper: skilling's transposetoaxes, specialized to 3d
 //
 // converts coordinates in "transposed" hilbert form to normal x,y,z axes
