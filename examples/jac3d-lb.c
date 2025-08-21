@@ -42,7 +42,7 @@
     {                                                                                                  \
         int64_t globFromX, globToX, globFromY, globToY, globFromZ, globToZ;                            \
         laik_my_range_3d(pWrite, r, &globFromX, &globToX, &globFromY, &globToY, &globFromZ, &globToZ); \
-        int itercount = ((globFromX + x) + (globFromY + y) + (globFromZ + z)) * 100;                    \
+        int itercount = ((globFromX + x) + (globFromY + y) + (globFromZ + z)) * 100;                   \
         volatile double sink = 0.0; /* volatile to prevent optimizing out */                           \
         for (int k = 0; k < itercount; ++k)                                                            \
             sink += baseR[z * zstrideR + y * ystrideR + x] * 0.0 + k * 1e-9;                           \
@@ -55,18 +55,10 @@
     /* npRead: pointer to new read partition based on new write partition borders */ \
     if ((_iter == 0) || (iter < _iter))                                              \
     {                                                                                \
-        if ((npWrite = laik_lb_balance(STOP_LB_SEGMENT, pWrite, algo)) == pWrite)    \
-            continue;                                                                \
-                                                                                     \
+        npWrite = laik_lb_balance(STOP_LB_SEGMENT, pWrite, algo);                    \
         npRead = laik_new_partitioning(prRead, world, space, npWrite);               \
-                                                                                     \
-        laik_switchto_partitioning(dWrite, npWrite, LAIK_DF_Preserve, LAIK_RO_None); \
-        laik_switchto_partitioning(dRead, npRead, LAIK_DF_None, LAIK_RO_None);       \
-                                                                                     \
-        laik_free_partitioning(pWrite);                                              \
-        laik_free_partitioning(pRead);                                               \
-        pWrite = npWrite;                                                            \
-        pRead = npRead;                                                              \
+        laik_lb_switch_and_free(&pWrite, &npWrite, dWrite, LAIK_DF_Preserve);        \
+        laik_lb_switch_and_free(&pRead, &npRead, dRead, LAIK_DF_None);               \
     }
 #else
 #define DO_WORKLOAD(_iter) (void)0;

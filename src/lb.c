@@ -52,7 +52,7 @@ static void min_max_mean(double *times, int gsize, double *maxdt, double *mean)
         *mean = sum / (double)gsize;
 }
 
-// print times (elements in weight array starting at offset size) since last rebalance
+// print information since last rebalance
 static void print_times(double *times, int gsize, double maxdt, double mean)
 {
     printf("[LAIK-LB] times in s for this segment: [");
@@ -1202,8 +1202,6 @@ Laik_Partitioner *laik_new_sfc_partitioner(double *weights, Laik_LBAlgorithm alg
 // rcb partitioner //
 /////////////////////
 
-// TODO: 3d
-
 // internal 1d rcb helper function; [fromTask - toTask)
 //
 // note: like the range weight function above, i've separated this into a 1d and 2d version
@@ -1849,4 +1847,22 @@ Laik_Partitioning *laik_lb_balance(Laik_LBState state, Laik_Partitioning *partit
 
     laik_svg_profiler_exit(inst, __func__);
     return npart;
+}
+
+void laik_lb_switch_and_free(Laik_Partitioning **part, Laik_Partitioning **npart, Laik_Data *data, Laik_DataFlow flow)
+{
+    assert(part && npart && *part && *npart);
+
+    if (*part == *npart)
+        return;
+
+    Laik_Instance *inst = (*part)->group->inst;
+    laik_svg_profiler_enter(inst, __func__);
+
+    laik_switchto_partitioning(data, *npart, flow, LAIK_RO_None);
+    laik_free_partitioning(*part);
+    *part = *npart;
+    *npart = NULL;
+
+    laik_svg_profiler_exit(inst, __func__);
 }

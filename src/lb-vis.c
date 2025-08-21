@@ -228,6 +228,8 @@ void laik_lbvis_save_trace()
     run_command(__func__, "python3 %s/examples/lbviz/trace.py", project_root);
 }
 
+// TODO:       fix this, directory is not being created properly
+// workaround: just create the json directory beforehand
 void laik_lbvis_enable_trace(int id, Laik_Instance *inst)
 {
     if (!find_and_write_project_root())

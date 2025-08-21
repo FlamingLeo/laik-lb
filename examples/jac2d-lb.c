@@ -59,18 +59,10 @@
     /* npRead: pointer to new read partition based on new write partition borders */ \
     if ((_iter == 0) || (iter < _iter))                                              \
     {                                                                                \
-        if ((npWrite = laik_lb_balance(STOP_LB_SEGMENT, pWrite, algo)) == pWrite)    \
-            continue;                                                                \
-                                                                                     \
+        npWrite = laik_lb_balance(STOP_LB_SEGMENT, pWrite, algo);                    \
         npRead = laik_new_partitioning(prRead, world, space, npWrite);               \
-                                                                                     \
-        laik_switchto_partitioning(dWrite, npWrite, LAIK_DF_Preserve, LAIK_RO_None); \
-        laik_switchto_partitioning(dRead, npRead, LAIK_DF_None, LAIK_RO_None);       \
-                                                                                     \
-        laik_free_partitioning(pWrite);                                              \
-        laik_free_partitioning(pRead);                                               \
-        pWrite = npWrite;                                                            \
-        pRead = npRead;                                                              \
+        laik_lb_switch_and_free(&pWrite, &npWrite, dWrite, LAIK_DF_Preserve);        \
+        laik_lb_switch_and_free(&pRead, &npRead, dRead, LAIK_DF_None);               \
     }
 #else
 #define DO_WORKLOAD(_iter) (void)0;
@@ -343,7 +335,7 @@ int main(int argc, char *argv[])
         if (resCond)
         {
             _res_iters++;
-            
+
             // calculate global residuum
             laik_switchto_flow(sumD, LAIK_DF_None, LAIK_RO_None);
             laik_get_map_1d(sumD, 0, (void **)&sumPtr, 0);

@@ -65,16 +65,7 @@ int main_1d(int argc, char *argv[], int64_t spsize, int lcount, bool do_visualiz
 
         // calculate and switch to new partitioning determined by load balancing algorithm
         Laik_Partitioning *newpart = laik_lb_balance(STOP_LB_SEGMENT, part, lbalg);
-        if (part == newpart)
-            continue;
-
-        laik_my_range_1d(newpart, 0, &from, &to);
-        laik_log(2, "[main1d] new range [%ld, %ld) count %ld\n", from, to, to - from);
-        laik_switchto_partitioning(data, newpart, LAIK_DF_None, LAIK_RO_None);
-
-        // free old partitioning
-        laik_free_partitioning(part);
-        part = newpart;
+        laik_lb_switch_and_free(&part, &newpart, data, LAIK_DF_Preserve);
     }
 
     // visualize task ranges
@@ -150,14 +141,7 @@ int main_2d(int argc, char *argv[], int64_t sdsize, int lcount, Laik_LBAlgorithm
 
         // calculate and switch to new partitioning determined by load balancing algorithm
         Laik_Partitioning *newpart = laik_lb_balance(STOP_LB_SEGMENT, part, lbalg);
-        if (part == newpart)
-            continue;
-
-        laik_switchto_partitioning(data, newpart, LAIK_DF_Preserve, LAIK_RO_None);
-
-        // free old partitioning
-        laik_free_partitioning(part);
-        part = newpart;
+        laik_lb_switch_and_free(&part, &newpart, data, LAIK_DF_Preserve);
     }
 
     // visualize task ranges
@@ -235,14 +219,7 @@ int main_3d(int argc, char *argv[], int64_t sdsize, int lcount, Laik_LBAlgorithm
 
         // calculate and switch to new partitioning determined by load balancing algorithm
         Laik_Partitioning *newpart = laik_lb_balance(STOP_LB_SEGMENT, part, lbalg);
-        if (part == newpart)
-            continue;
-
-        laik_switchto_partitioning(data, newpart, LAIK_DF_Preserve, LAIK_RO_None);
-
-        // free old partitioning
-        laik_free_partitioning(part);
-        part = newpart;
+        laik_lb_switch_and_free(&part, &newpart, data, LAIK_DF_Preserve);
     }
 
     // visualize task ranges
