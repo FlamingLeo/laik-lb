@@ -21,12 +21,19 @@ static const int log2_tab[64] = {
     56, 45, 25, 31, 35, 16, 9, 12,
     44, 24, 15, 8, 23, 7, 6, 5};
 
-// helper struct for SFC partitioner: algorithm + weights
+// helper struct for SFC partitioner: weights + algorithm
 typedef struct
 {
     double *weights;
     Laik_LBAlgorithm algo;
 } LB_SFC_Data;
+
+// helper struct for incremental RCB: weights + difference between imbalance of last run and current run
+typedef struct
+{
+    double *weights;
+    double imbaldiff;
+} LB_RCBIncr_Data;
 
 //////////////////////////////
 // generic helper functions //
@@ -1622,23 +1629,33 @@ void runRCBPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams *p)
 
 void runIncrementalRCBPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams *p)
 {
-    static int count = 0;
-    static int rthresh = 2; // do a global rcb step after every rthresh steps
+    static const double t_imbal = 0.05; // rel. imbalance threshold; do global rcb if the rel. imbalance diff is below this value
 
     Laik_Instance *inst = p->space->inst;
     laik_svg_profiler_enter(inst, __func__);
 
     int tidcount = p->group->size;
     int dims = p->space->dims;
-    double *weights = (double *)p->partitioner->data;
+    LB_RCBIncr_Data *data = (LB_RCBIncr_Data *)p->partitioner->data;
+    double *weights = data->weights;
+    double imbaldiff = data->imbaldiff;
+    free(data);
 
     Laik_Space *s = p->space;
     Laik_Range range = s->range;
 
-    // for the first run, do normal rcb to get base partitioning
+    // for the first run or some insignificant difference between the current and last rel. imbalances, do global rcb as correction step
+    if (isnan(imbaldiff) || imbaldiff < t_imbal)
+    {
+        laik_log(1, "lb/rcb_incr: diff %f < %f, doing global rcb\n", imbaldiff, t_imbal);
+        rcb_sl_clear();
+        sbl_recompute = true;
+    }
+
+    // correction step
     if (!sbl_parents)
     {
-        laik_log(1, "lb/rcb_incr: no second-bottom-level parents yet, using normal rcb...\n");
+        laik_log(1, "lb/rcb_incr: sbl_parents null, using normal rcb\n");
 
         if (dims == 1)
             rcb_1d(r, &range, 0, tidcount - 1, weights, 0);
@@ -1652,7 +1669,7 @@ void runIncrementalRCBPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams 
     // otherwise, only move bottom-most boundaries
     else
     {
-        laik_log(1, "lb/rcb_incr: second-bottom-level parents found, using incremental rcb....\n");
+        laik_log(1, "lb/rcb_incr: sbl_parents found, using incremental rcb\n");
         LB_RCB_SBL *current = sbl_parents;
         while (current)
         {
@@ -1662,17 +1679,8 @@ void runIncrementalRCBPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams 
                 rcb_2d(r, &(current->range), current->from, current->to, weights, 0);
             else /* if (dims == 3) */
                 rcb_3d(r, &(current->range), current->from, current->to, weights, 0);
-            laik_log(1, "lb/rcb_incr: fromtask: %d, totask: %d, range: [%ld,%ld]->(%ld,%ld)\n", current->from, current->to, current->range.from.i[0], current->range.from.i[1], current->range.to.i[0], current->range.to.i[1]);
             current = current->next;
         }
-        ++count;
-    }
-
-    if (count == rthresh)
-    {
-        rcb_sl_clear();
-        sbl_recompute = true;
-        count = 0;
     }
 
     laik_svg_profiler_exit(inst, __func__);
@@ -1683,9 +1691,13 @@ Laik_Partitioner *laik_new_rcb_partitioner(double *weights)
     return laik_new_partitioner("rcb", runRCBPartitioner, (void *)weights, 0);
 }
 
-Laik_Partitioner *laik_new_incr_rcb_partitioner(double *weights)
+Laik_Partitioner *laik_new_incr_rcb_partitioner(double *weights, double imbaldiff)
 {
-    return laik_new_partitioner("rcb_incr", runIncrementalRCBPartitioner, (void *)weights, 0);
+    LB_RCBIncr_Data *data = (LB_RCBIncr_Data *)safe_malloc(sizeof(LB_RCBIncr_Data));
+    data->weights = weights;
+    data->imbaldiff = imbaldiff;
+
+    return laik_new_partitioner("rcb_incr", runIncrementalRCBPartitioner, (void *)data, 0);
 }
 
 ////////////////////
@@ -1876,7 +1888,8 @@ Laik_Partitioning *laik_lb_balance(Laik_LBState state, Laik_Partitioning *partit
     static bool stopped = false;
     static int p_stopctr = 0;
     static int p_startctr = 0;
-    static int segment = 0; // load balancing segment, for debugging purposes
+    static int segment = 0;         // load balancing segment, for debugging purposes
+    static double last_imbal = NAN; // relative imbalance of previous run or NAN for the first run, used in incremental rcb to determine whether or not to use global rcb instead
 
     assert(t_stop < t_start && "stopping threshold should be under starting threshold");
 
@@ -1902,7 +1915,7 @@ Laik_Partitioning *laik_lb_balance(Laik_LBState state, Laik_Partitioning *partit
 
     double imbal = get_imbalance(partitioning, ttime);
 
-    /* handle possibly consecutive runs over / under respective thresholds */
+    // handle possibly consecutive runs over / under respective thresholds
     if (imbal < t_stop)
     {
         // imbalance BELOW STOPPING threshold: increment consecutive stopping runs and reset starting runs
@@ -1924,7 +1937,7 @@ Laik_Partitioning *laik_lb_balance(Laik_LBState state, Laik_Partitioning *partit
         laik_log(1, "lb: relative imbalance %f, ]stop: %f, start: %f[, no consecutive runs", imbal, t_stop, t_start);
     }
 
-    /* start / stop load balancing based on consecutive runs */
+    // start / stop load balancing based on consecutive runs
     if (!stopped && p_stopctr >= p_stop)
     {
         // stop load balancing for consecutive runs UNDER stopping threshold
@@ -1945,6 +1958,7 @@ Laik_Partitioning *laik_lb_balance(Laik_LBState state, Laik_Partitioning *partit
     {
         laik_log(1, "lb: load balancing segment lb-%d currently INACTIVE, relative imbalance %f (t_stop %f, t_start %f), returning partitioning %s unchanged...\n", segment, imbal, t_stop, t_start, partitioning->name);
         segment++;
+        last_imbal = imbal;
 
         laik_svg_profiler_exit(inst, __func__);
         return partitioning;
@@ -1964,7 +1978,8 @@ Laik_Partitioning *laik_lb_balance(Laik_LBState state, Laik_Partitioning *partit
         nparter = laik_new_rcb_partitioner(weights);
         break;
     case LB_RCB_INCR:
-        nparter = laik_new_incr_rcb_partitioner(weights);
+        double imbaldiff = last_imbal - imbal; // NAN -> first run
+        nparter = laik_new_incr_rcb_partitioner(weights, imbaldiff);
         break;
     case LB_HILBERT:
     case LB_GILBERT:
@@ -1982,6 +1997,7 @@ Laik_Partitioning *laik_lb_balance(Laik_LBState state, Laik_Partitioning *partit
 
     laik_log(1, "lb: finished load balancing segment lb-%d, created new partitioning %s\n", segment, npart->name);
     segment++;
+    last_imbal = imbal;
 
     laik_svg_profiler_exit(inst, __func__);
     return npart;
