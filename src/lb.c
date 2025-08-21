@@ -1238,6 +1238,22 @@ static void rcb_sl_push(int from, int to, const Laik_Range *range)
     }
 }
 
+// clear linked list
+static void rcb_sl_clear()
+{
+    if (!sbl_parents)
+        return;
+
+    LB_RCB_SBL *cur = sbl_parents;
+    while (cur)
+    {
+        LB_RCB_SBL *next = cur->next;
+        free(cur);
+        cur = next;
+    }
+    sbl_parents = NULL;
+}
+
 // internal 1d rcb helper function; [fromTask - toTask)
 //
 // note: like the range weight function above, i've separated this into a 1d and 2d version
@@ -1606,6 +1622,9 @@ void runRCBPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams *p)
 
 void runIncrementalRCBPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams *p)
 {
+    static int count = 0;
+    static int rthresh = 2; // do a global rcb step after every rthresh steps
+
     Laik_Instance *inst = p->space->inst;
     laik_svg_profiler_enter(inst, __func__);
 
@@ -1620,6 +1639,7 @@ void runIncrementalRCBPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams 
     if (!sbl_parents)
     {
         laik_log(1, "lb/rcb_incr: no second-bottom-level parents yet, using normal rcb...\n");
+
         if (dims == 1)
             rcb_1d(r, &range, 0, tidcount - 1, weights, 0);
         else if (dims == 2)
@@ -1645,6 +1665,14 @@ void runIncrementalRCBPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams 
             laik_log(1, "lb/rcb_incr: fromtask: %d, totask: %d, range: [%ld,%ld]->(%ld,%ld)\n", current->from, current->to, current->range.from.i[0], current->range.from.i[1], current->range.to.i[0], current->range.to.i[1]);
             current = current->next;
         }
+        ++count;
+    }
+
+    if (count == rthresh)
+    {
+        rcb_sl_clear();
+        sbl_recompute = true;
+        count = 0;
     }
 
     laik_svg_profiler_exit(inst, __func__);
