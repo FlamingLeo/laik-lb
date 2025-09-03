@@ -4,6 +4,9 @@
  *
  * Based on the MD practical course code (WiSe 2024/25) (not a 1:1 port!).
  * https://github.com/FlamingLeo/MolSim (w3t2, specifically)
+ * 
+ * NOTE: Values will differ slightly from the serial version due to floating point imprecision.
+ *       Tried using the Kahan summation algorithm but it didn't really do anything. Maybe use long doubles instead?
  */
 #include <assert.h>
 #include <stdio.h>
