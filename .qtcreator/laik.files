@@ -101,7 +101,9 @@
 ../examples/markov.c
 ../examples/markov2.c
 ../examples/md.c
+../examples/md3d.c
 ../examples/md-ser.c
+../examples/md3d-ser.c
 ../examples/propagation1d.c
 ../examples/propagation2d.c
 ../examples/README.md

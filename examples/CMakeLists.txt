@@ -13,6 +13,8 @@ foreach (example
     "markov-ser"
     "md"
     "md-ser"
+    "md3d"
+    "md3d-ser"
     "propagation1d"
     "propagation2d"
     "spmv"
