@@ -119,9 +119,12 @@ static inline int64_t neighbors_in_read_3d(int64_t w_idx,
                 int64_t nx = rr_x + dx;
                 int64_t ny = rr_y + dy;
                 int64_t nz = rr_z + dz;
-                if (nx < 0 || nx >= r_x) continue;
-                if (ny < 0 || ny >= r_y) continue;
-                if (nz < 0 || nz >= r_z) continue;
+                if (nx < 0 || nx >= r_x)
+                    continue;
+                if (ny < 0 || ny >= r_y)
+                    continue;
+                if (nz < 0 || nz >= r_z)
+                    continue;
                 // linear index in read-local 1D layout (x fastest)
                 int64_t idx = nx + ny * r_x + nz * (r_x * r_y);
                 out_buf[count++] = idx;
@@ -136,12 +139,18 @@ static inline int64_t cindex3d(double px, double py, double pz, int64_t ncells_x
     int64_t ix = (int64_t)(px / CUTOFF);
     int64_t iy = (int64_t)(py / CUTOFF);
     int64_t iz = (int64_t)(pz / CUTOFF);
-    if (ix < 0) ix = 0;
-    if (iy < 0) iy = 0;
-    if (iz < 0) iz = 0;
-    if (ix >= ncells_x) ix = ncells_x - 1;
-    if (iy >= ncells_y) iy = ncells_y - 1;
-    if (iz >= ncells_z) iz = ncells_z - 1;
+    if (ix < 0)
+        ix = 0;
+    if (iy < 0)
+        iy = 0;
+    if (iz < 0)
+        iz = 0;
+    if (ix >= ncells_x)
+        ix = ncells_x - 1;
+    if (iy >= ncells_y)
+        iy = ncells_y - 1;
+    if (iz >= ncells_z)
+        iz = ncells_z - 1;
     return ix + iy * ncells_x + iz * (ncells_x * ncells_y);
 }
 
