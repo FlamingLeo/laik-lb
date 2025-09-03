@@ -11,6 +11,8 @@ foreach (example
     "markov"
     "markov2"
     "markov-ser"
+    "md"
+    "md-ser"
     "propagation1d"
     "propagation2d"
     "spmv"

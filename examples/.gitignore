@@ -28,6 +28,8 @@ test
 markov-ser
 markov
 markov2
+md
+md-ser
 propagation1d
 propagation2d
 ping_pong
