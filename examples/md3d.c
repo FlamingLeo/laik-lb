@@ -493,11 +493,17 @@ int main(int argc, char **argv)
                     for (int p = baseHeadW[c]; p != -1; p = baseNext[p])
                     {
                         int64_t neighbors[27];
-                        int64_t ncount = neighbors_in_read_3d(c, xsizeW, ysizeW, zsizeW,
+                        int64_t ncount = neighbors_in_read_3d(c,
+                                                              /* w_x  = rowstride  */ ystrideW,
+                                                              /* w_y  = nrows      */ ysizeW,
+                                                              /* w_z  = nslices    */ zsizeW,
                                                               fromXW, fromYW, fromZW,
-                                                              xsizeR, ysizeR, zsizeR,
+                                                              /* r_x  = rowstride  */ ystrideR,
+                                                              /* r_y  = nrows      */ ysizeR,
+                                                              /* r_z  = nslices    */ zsizeR,
                                                               fromXR, fromYR, fromZR,
                                                               neighbors, 27);
+
                         assert(ncount != -1);
 
                         // for all neighbor cells nc... (read part.)

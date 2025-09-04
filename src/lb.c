@@ -28,9 +28,38 @@ typedef struct
     Laik_LBAlgorithm algo;
 } LB_SFC_Data;
 
-//////////////////////////////
-// generic helper functions //
-//////////////////////////////
+// helper struct for storing weight arrays for an individual space
+//
+// this is needed to not keep freeing and (re)allocating weight memory on every call
+// while simultaneously supporting load balancing for multiple spaces (partitionings) in one program
+typedef struct LB_SpaceWeightList
+{
+    int id;                          // space id
+    double *weights;                 // weight array corresponding to that space (count not needed, since it's just the total number of elements in that space)
+    Laik_Space *weightspace;         // laik space associated with weight array, used in weight initialization
+    Laik_Data *weightdata;           // laik data container, used in weight initialization
+    Laik_Partitioning *weightpart;   // laik space partitioning, used in weight initialization
+    struct LB_SpaceWeightList *next; // next element in list
+} LB_SpaceWeightList;
+
+// space weight list (space id + associated weight array)
+static LB_SpaceWeightList *swlist = NULL;
+
+/////////////
+// utility //
+/////////////
+
+// safely allocate memory or panic on failure
+static void *safe_malloc(size_t n)
+{
+    void *p = malloc(n);
+    if (!p)
+    {
+        laik_panic("Could not allocate enough memory!");
+        exit(EXIT_FAILURE);
+    }
+    return p;
+}
 
 // calculate the difference between the minimum and maximum of the times taken by each task and the mean
 //
@@ -86,17 +115,80 @@ static inline int log2_int(uint64_t value)
     return log2_tab[((uint64_t)((value - (value >> 1)) * 0x07EDD5E59A4E28C2)) >> 58];
 }
 
-// safely allocate memory or panic on failure
-static void *safe_malloc(size_t n)
+////////////////////////////////////////
+// space weight linked list functions //
+////////////////////////////////////////
+
+// create and return a new space weight list node, where the weight array is NULL and must be allocated afterwards
+static LB_SpaceWeightList *swlist_create_node(int id)
 {
-    void *p = malloc(n);
-    if (!p)
-    {
-        laik_panic("Could not allocate enough memory!");
-        exit(EXIT_FAILURE);
-    }
-    return p;
+    LB_SpaceWeightList *node = (LB_SpaceWeightList *)safe_malloc(sizeof(LB_SpaceWeightList));
+    node->id = id;
+    node->weights = NULL;
+    node->weightspace = NULL;
+    node->weightdata = NULL;
+    node->next = NULL;
+    laik_log(1, "lb/swlist: new swlist node for space %d", id);
+    return node;
 }
+
+// try to find a node (by space id), and if we don't find it, insert it at the back
+static LB_SpaceWeightList *swlist_find_or_insert(LB_SpaceWeightList **head, int id)
+{
+    // create node if head is NULL and return it
+    if (*head == NULL)
+    {
+        laik_log(1, "lb/swlist: initializing swlist");
+        *head = swlist_create_node(id);
+        return *head;
+    }
+
+    // otherwise, search for it...
+    LB_SpaceWeightList *curr = *head;
+    LB_SpaceWeightList *prev = NULL;
+
+    while (curr)
+    {
+        if (curr->id == id)
+        {
+            laik_log(1, "lb/swlist: found swlist for space id %d", id);
+            return curr;
+        }
+        prev = curr;
+        curr = curr->next;
+    }
+
+    // not found, so append to end of swlist
+    laik_log(1, "lb/swlist: no swlist found for space id %d, creating...", id);
+    LB_SpaceWeightList *new_node = swlist_create_node(id);
+    prev->next = new_node;
+
+    return new_node;
+}
+
+// free swlist
+static void swlist_free(LB_SpaceWeightList *head)
+{
+    LB_SpaceWeightList *temp;
+    while (head)
+    {
+        temp = head->next;
+        if (head->weights)
+            free(head->weights);
+        if (head->weightpart)
+            laik_free_partitioning(head->weightpart);
+        if (head->weightspace)
+            laik_free_space(head->weightspace);
+        if (head->weightdata)
+            laik_free(head->weightdata); // not actually implemented behind the scenes but it'll be correct
+        free(head);
+        head = temp;
+    }
+}
+
+/////////////////////////
+// lb helper functions //
+/////////////////////////
 
 // public: get algorithm enum from string
 // unknown algorithm -> fall back to rcb
@@ -1563,12 +1655,36 @@ Laik_Partitioner *laik_new_rcb_partitioner(double *weights)
 // formula: (max - min) / mean
 static double get_imbalance(Laik_Partitioning *p, double ttime)
 {
+    static int lastgsize = -1;
+    static Laik_Space *tspace = NULL;
+    static Laik_Data *tdata = NULL;
+    static Laik_Partitioning *tpart = NULL;
+
     Laik_Group *group = p->group;
     Laik_Instance *inst = group->inst;
     laik_svg_profiler_enter(inst, __func__);
 
     int task = laik_myid(group);
     int gsize = group->size;
+
+    // initialize group size on first run
+    if (lastgsize == -1)
+        lastgsize = gsize;
+
+    // if group size changes, invalidate previous data
+    if (gsize != lastgsize)
+    {
+        lastgsize = gsize;
+        if (tpart)
+            laik_free_partitioning(tpart);
+        if (tspace)
+            laik_free_space(tspace);
+        if (tdata)
+            laik_free(tdata);
+        tspace = NULL;
+        tdata = NULL;
+        tpart = NULL;
+    }
 
     // times will be stored in here
     double times[gsize];
@@ -1577,19 +1693,19 @@ static double get_imbalance(Laik_Partitioning *p, double ttime)
     // store own time
     times[task] = ttime;
 
-    // aggregate times
-    // initialize laik space for aggregating weights
-    Laik_Space *tspace;
-    Laik_Data *tdata;
-    Laik_Partitioning *tpart;
-
-    // use weights directly as input data
+    // aggregation: use weights directly as input data
     laik_log(1, "lb/get_imbalance: aggregating task times...\n");
-    tspace = laik_new_space_1d(inst, gsize);
-    tdata = laik_new_data(tspace, laik_Double);
-    tpart = laik_new_partitioning(laik_All, group, tspace, NULL);
-    laik_data_provide_memory(tdata, times, gsize * sizeof(double));
-    laik_set_initial_partitioning(tdata, tpart);
+    if (!tspace)
+    {
+        tspace = laik_new_space_1d(inst, gsize);
+        tdata = laik_new_data(tspace, laik_Double);
+        tpart = laik_new_partitioning(laik_All, group, tspace, NULL);
+        laik_data_provide_memory(tdata, times, gsize * sizeof(double));
+        laik_data_set_name(tdata, "lb-timedata");
+        laik_set_initial_partitioning(tdata, tpart);
+    }
+    else
+        laik_data_provide_memory(tdata, times, gsize * sizeof(double));
 
     // collect times into weights, shared among all tasks
     laik_switchto_partitioning(tdata, tpart, LAIK_DF_Preserve, LAIK_RO_Sum);
@@ -1610,10 +1726,6 @@ static double get_imbalance(Laik_Partitioning *p, double ttime)
     if (task == 0)
         print_times(times, gsize, maxdt, mean);
 
-    // free partitionings since we don't need them anymore
-    laik_free_partitioning(tpart);
-    laik_free_space(tspace);
-
     // return relative threshold ((max - min) / mean)
     laik_svg_profiler_exit(inst, __func__);
     return maxdt / mean;
@@ -1622,12 +1734,13 @@ static double get_imbalance(Laik_Partitioning *p, double ttime)
 // initialize the weight array for the current load balancing run
 static double *init_weights(Laik_Partitioning *p, double ttime)
 {
-    double *weights;
-
     Laik_Space *space = p->space;
     Laik_Group *group = p->group;
     Laik_Instance *inst = group->inst;
     laik_svg_profiler_enter(inst, __func__);
+
+    // find associated entry for current space in swlist
+    LB_SpaceWeightList *swl = swlist_find_or_insert(&swlist, p->space->id);
 
     // allocate weight array and zero-initialize
     // for t tasks, the final t elements of the array are the raw times taken by each task (starting from 0, one after the last weight)
@@ -1637,8 +1750,9 @@ static double *init_weights(Laik_Partitioning *p, double ttime)
     int64_t size_z = dims == 3 ? (space->range.to.i[2] - space->range.from.i[2]) : 1;
     int64_t size = size_x * size_y * size_z;
 
-    weights = (double *)safe_malloc(size * sizeof(double));
-    memset(weights, 0, size * sizeof(double));
+    if (!swl->weights)
+        swl->weights = (double *)safe_malloc(size * sizeof(double));
+    memset(swl->weights, 0, size * sizeof(double));
 
     laik_log(1, "lb/init_weights: initialized weight array of %ld bytes (%f kB) (dims: %d, size: %ldx%ldx%ld=%ld)\n", size * sizeof(double), .001 * size * sizeof(double), dims, size_x, size_y, size_z, size);
 
@@ -1684,7 +1798,7 @@ static double *init_weights(Laik_Partitioning *p, double ttime)
             int64_t from, to;
             laik_my_range_1d(p, r, &from, &to);
             for (int64_t i = from; i < to; ++i)
-                weights[i] = tweight;
+                swl->weights[i] = tweight;
         }
         else if (dims == 2)
         {
@@ -1692,7 +1806,7 @@ static double *init_weights(Laik_Partitioning *p, double ttime)
             laik_my_range_2d(p, r, &from_x, &to_x, &from_y, &to_y);
             for (int64_t y = from_y; y < to_y; ++y)
                 for (int64_t x = from_x; x < to_x; ++x)
-                    weights[y * size_x + x] = tweight;
+                    swl->weights[y * size_x + x] = tweight;
         }
         else /* if (dims == 3) */
         {
@@ -1701,33 +1815,33 @@ static double *init_weights(Laik_Partitioning *p, double ttime)
             for (int64_t z = from_z; z < to_z; ++z)
                 for (int64_t y = from_y; y < to_y; ++y)
                     for (int64_t x = from_x; x < to_x; ++x)
-                        weights[x + size_x * (y + size_y * z)] = tweight;
+                        swl->weights[x + size_x * (y + size_y * z)] = tweight;
         }
     }
 
-    // initialize laik space for aggregating weights
-    Laik_Space *weightspace;
-    Laik_Data *weightdata;
-    Laik_Partitioning *weightpart;
+    // initialize laik space for aggregating weights if they haven't been initialized yet
+    // we only check for weightspace since everything should be initialized at once
+    if (!swl->weightspace)
+    {
+        swl->weightspace = laik_new_space_1d(inst, size);
+        swl->weightdata = laik_new_data(swl->weightspace, laik_Double);
+        swl->weightpart = laik_new_partitioning(laik_All, group, swl->weightspace, NULL);
+        laik_data_provide_memory(swl->weightdata, swl->weights, size * sizeof(double));
+        laik_data_set_name(swl->weightdata, "weights");
+        laik_set_initial_partitioning(swl->weightdata, swl->weightpart);
+    }
+    else
+    {
+        laik_data_provide_memory(swl->weightdata, swl->weights, size * sizeof(double));
+    }
 
     // use weights directly as input data
     laik_log(1, "lb/init_weights: aggregating weights...\n");
 
-    weightspace = laik_new_space_1d(inst, size);
-    weightdata = laik_new_data(weightspace, laik_Double);
-    weightpart = laik_new_partitioning(laik_All, group, weightspace, NULL);
-    laik_data_provide_memory(weightdata, weights, size * sizeof(double));
-    laik_set_initial_partitioning(weightdata, weightpart);
-
     // collect times into weights, shared among all tasks
-    laik_switchto_partitioning(weightdata, weightpart, LAIK_DF_Preserve, LAIK_RO_Sum);
-
-    // free partitionings since we don't need them anymore
-    laik_free_partitioning(weightpart);
-    laik_free_space(weightspace);
-
+    laik_switchto_partitioning(swl->weightdata, swl->weightpart, LAIK_DF_Preserve, LAIK_RO_Sum);
     laik_svg_profiler_exit(inst, __func__);
-    return weights;
+    return swl->weights;
 }
 
 // TODO: consider metric where overhead for sending data outweighs possible gains by load balancing, and if this is even necessary / good
@@ -1840,7 +1954,6 @@ Laik_Partitioning *laik_lb_balance(Laik_LBState state, Laik_Partitioning *partit
     // create new partitioning to return and free weight array
     laik_log(1, "lb: creating new partitioning for load balancing segment lb-%d using other=%s", segment, partitioning->name);
     Laik_Partitioning *npart = laik_new_partitioning(nparter, partitioning->group, partitioning->space, partitioning);
-    free(weights);
 
     laik_log(1, "lb: finished load balancing segment lb-%d, created new partitioning %s\n", segment, npart->name);
     segment++;
@@ -1865,4 +1978,9 @@ void laik_lb_switch_and_free(Laik_Partitioning **part, Laik_Partitioning **npart
     *npart = NULL;
 
     laik_svg_profiler_exit(inst, __func__);
+}
+
+void laik_lb_free()
+{
+    swlist_free(swlist);
 }

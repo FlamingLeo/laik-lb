@@ -178,8 +178,8 @@ void laik_finalize(Laik_Instance* inst)
     laik_close_profiling_file(inst);
     laik_free_profiling(inst);
     free(inst->control);
-
     laik_log_cleanup(inst);
+    laik_lb_free();
 }
 
 //! get unique location ID for the calling process in given instance

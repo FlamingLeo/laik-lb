@@ -72,4 +72,7 @@ Laik_Partitioning *laik_lb_balance(Laik_LBState state, Laik_Partitioning *partit
 // if both partitionings are the same, then the function does nothing
 void laik_lb_switch_and_free(Laik_Partitioning **part, Laik_Partitioning **npart, Laik_Data *data, Laik_DataFlow flow);
 
+// free internal data structures (called on finalize)
+void laik_lb_free();
+
 #endif

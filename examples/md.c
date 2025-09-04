@@ -4,7 +4,7 @@
  *
  * Based on the MD practical course code (WiSe 2024/25) (not a 1:1 port!).
  * https://github.com/FlamingLeo/MolSim (w3t2, specifically)
- * 
+ *
  * NOTE: Values will differ slightly from the serial version due to floating point imprecision.
  *       Tried using the Kahan summation algorithm but it didn't really do anything. Maybe use long doubles instead?
  */
@@ -404,7 +404,9 @@ int main(int argc, char **argv)
                 for (int p = baseHeadW[c]; p != -1; p = baseNext[p])
                 {
                     int64_t neighbors[9];
-                    int64_t ncount = neighbors_in_read(c, ysizeW, xsizeW, fromYW, fromXW, ysizeR, xsizeR, fromYR, fromXR, neighbors, 9);
+                    int64_t ncount = neighbors_in_read(c, ysizeW, ystrideW, fromYW, fromXW,
+                                                       ysizeR, ystrideR, fromYR, fromXR,
+                                                       neighbors, 9);
                     assert(ncount != -1);
 
                     // for all neighbor cells nc... (read part.)
