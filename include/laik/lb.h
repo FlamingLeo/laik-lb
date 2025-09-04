@@ -75,4 +75,11 @@ void laik_lb_switch_and_free(Laik_Partitioning **part, Laik_Partitioning **npart
 // free internal data structures (called on finalize)
 void laik_lb_free();
 
+// get the tag set for appending ranges (default: 0)
+int laik_lb_get_tag();
+
+// set the tag for appending ranges (default: 0)
+// when specifying a tag > 0, the mappings get concatenated into one mapping with no. 0 (watch out!)
+void laik_lb_set_tag(int ntag);
+
 #endif

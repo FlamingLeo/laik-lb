@@ -45,6 +45,8 @@ typedef struct LB_SpaceWeightList
 // space weight list (space id + associated weight array)
 static LB_SpaceWeightList *swlist = NULL;
 
+static int tag = 0;
+
 /////////////
 // utility //
 /////////////
@@ -333,7 +335,7 @@ static void merge_rects_then_add_ranges(int *grid1D, int64_t width, int64_t heig
             }
 
             // record the rectangle using best_w and best_h
-            laik_append_range(r, tid, &(Laik_Range){.space = r->list->space, .from = {{x0, y0, 0}}, .to = {{x0 + best_w, y0 + best_h, 0}}}, 0, 0);
+            laik_append_range(r, tid, &(Laik_Range){.space = r->list->space, .from = {{x0, y0, 0}}, .to = {{x0 + best_w, y0 + best_h, 0}}}, tag, 0);
 
             // mark covered cells “used” by setting them to -1
             for (int64_t dy = 0; dy < best_h; ++dy)
@@ -468,7 +470,7 @@ static void merge_cuboids_then_add_ranges(int *grid1D, int64_t width, int64_t he
                                                                                                          y0 + best_h,
                                                                                                          z0 + best_d,
                                                                                                      }}},
-                              0, 0);
+                              tag, 0);
 
             // mark covered cells used (set to -1)
             for (int64_t dz = 0; dz < best_d; ++dz)
@@ -1310,7 +1312,7 @@ static void rcb_1d(Laik_RangeReceiver *r, Laik_Range *range, int fromTask, int t
     int count = toTask - fromTask + 1;
     if (count == 1 || from > to)
     {
-        laik_append_range(r, fromTask, range, 0, 0);
+        laik_append_range(r, fromTask, range, tag, 0);
         laik_svg_profiler_exit(inst, __func__);
         return;
     }
@@ -1370,7 +1372,7 @@ static void rcb_2d(Laik_RangeReceiver *r, Laik_Range *range, int fromTask, int t
     int count = toTask - fromTask + 1;
     if (count == 1)
     {
-        laik_append_range(r, fromTask, range, 0, 0);
+        laik_append_range(r, fromTask, range, tag, 0);
         laik_svg_profiler_exit(inst, __func__);
         return;
     }
@@ -1385,7 +1387,7 @@ static void rcb_2d(Laik_RangeReceiver *r, Laik_Range *range, int fromTask, int t
     int64_t width = axis ? dy : dx;
     if (width == 1)
     {
-        laik_append_range(r, fromTask, range, 0, 0);
+        laik_append_range(r, fromTask, range, tag, 0);
         laik_svg_profiler_exit(inst, __func__);
         return;
     }
@@ -1485,7 +1487,7 @@ static void rcb_3d(Laik_RangeReceiver *r, Laik_Range *range, int fromTask, int t
     int count = toTask - fromTask + 1;
     if (count == 1)
     {
-        laik_append_range(r, fromTask, range, 0, 0);
+        laik_append_range(r, fromTask, range, tag, 0);
         laik_svg_profiler_exit(inst, __func__);
         return;
     }
@@ -1505,7 +1507,7 @@ static void rcb_3d(Laik_RangeReceiver *r, Laik_Range *range, int fromTask, int t
                                                                : dz;
     if (length_along_axis == 1)
     {
-        laik_append_range(r, fromTask, range, 0, 0);
+        laik_append_range(r, fromTask, range, tag, 0);
         laik_svg_profiler_exit(inst, __func__);
         return;
     }
@@ -1983,4 +1985,12 @@ void laik_lb_switch_and_free(Laik_Partitioning **part, Laik_Partitioning **npart
 void laik_lb_free()
 {
     swlist_free(swlist);
+}
+
+int laik_lb_get_tag() {
+    return tag;
+}
+
+void laik_lb_set_tag(int ntag) {
+    tag = ntag;
 }
