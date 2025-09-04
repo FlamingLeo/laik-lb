@@ -178,7 +178,7 @@ static double get_idx_weight_3d(double *weights, int64_t size_x, int64_t size_y,
 // TODO: preprocessing to avoid multiple grid scans
 
 // merge rectangles (2d)
-static void merge_rects(int *grid1D, int64_t width, int64_t height, Laik_RangeReceiver *r, int tidcount)
+static void merge_rects_then_add_ranges(int *grid1D, int64_t width, int64_t height, Laik_RangeReceiver *r, int tidcount)
 {
     Laik_Instance *inst = r->list->space->inst;
     laik_svg_profiler_enter(inst, __func__);
@@ -254,7 +254,7 @@ static void merge_rects(int *grid1D, int64_t width, int64_t height, Laik_RangeRe
 }
 
 // merge cuboids (3d, x: width, y: height, z: depth)
-static void merge_cuboids(int *grid1D, int64_t width, int64_t height, int64_t depth, Laik_RangeReceiver *r, int tidcount)
+static void merge_cuboids_then_add_ranges(int *grid1D, int64_t width, int64_t height, int64_t depth, Laik_RangeReceiver *r, int tidcount)
 {
     Laik_Instance *inst = r->list->space->inst;
     laik_svg_profiler_enter(inst, __func__);
@@ -1056,7 +1056,7 @@ static void sfc_2d(Laik_RangeReceiver *r, Laik_PartitionerParams *p, double *wei
     }
 
     // decompose (destroy) idxgrid into axis-aligned rectangles
-    merge_rects(idxGrid, size_x, size_y, r, tidcount);
+    merge_rects_then_add_ranges(idxGrid, size_x, size_y, r, tidcount);
 
     // free remaining memory
     free(idxGrid);
@@ -1151,7 +1151,7 @@ static void sfc_3d(Laik_RangeReceiver *r, Laik_PartitionerParams *p, double *wei
     }
 
     // decompose (destroy) idxgrid into axis-aligned cuboids
-    merge_cuboids(idxGrid, size_x, size_y, size_z, r, tidcount);
+    merge_cuboids_then_add_ranges(idxGrid, size_x, size_y, size_z, r, tidcount);
 
     // free remaining memory
     free(idxGrid);

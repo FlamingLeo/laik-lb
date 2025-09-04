@@ -139,8 +139,6 @@ char* describe_lex(Laik_Layout* l)
 static
 bool reuse_lex(Laik_Layout* l, int n, Laik_Layout* old, int nold)
 {
-    return false;
-
     Laik_Layout_Lex* lnew = laik_is_layout_lex(l);
     assert(lnew);
     Laik_Layout_Lex* lold = laik_is_layout_lex(old);
