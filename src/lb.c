@@ -640,10 +640,10 @@ static inline void hilbert_d2xyz(int b, uint64_t d, uint64_t *x, uint64_t *y, ui
 // note²: this is just some extra functionality and is not actually intended to be part of the final lb extension
 //        this function is also generally slower than the regular hilbert sfc, but this is only really meant to be used
 //        when the space size is not a square with side length a power of 2
-static uint64_t gilbert_d2xy_r(uint64_t dst_idx, uint64_t cur_idx,
-                               int64_t *xres, int64_t *yres,
-                               int64_t ax, int64_t ay,
-                               int64_t bx, int64_t by)
+static inline uint64_t gilbert_d2xy_r(uint64_t dst_idx, uint64_t cur_idx,
+                                      int64_t *xres, int64_t *yres,
+                                      int64_t ax, int64_t ay,
+                                      int64_t bx, int64_t by)
 {
     uint64_t nxt_idx;
     int64_t w, h, x, y, dax, day, dbx, dby, di;
@@ -737,7 +737,7 @@ static uint64_t gilbert_d2xy_r(uint64_t dst_idx, uint64_t cur_idx,
 }
 
 // d -> (x,y) on a gilbert curve for an arbitrary 2D domain
-static int64_t gilbert_d2xy(int64_t *x, int64_t *y, uint64_t idx, int64_t w, int64_t h)
+static inline int64_t gilbert_d2xy(int64_t *x, int64_t *y, uint64_t idx, int64_t w, int64_t h)
 {
     *x = 0;
     *y = 0;
@@ -750,11 +750,11 @@ static int64_t gilbert_d2xy(int64_t *x, int64_t *y, uint64_t idx, int64_t w, int
 // (tail-)recursive helper function for 3d gilbert
 //
 // sames notes and caveats as 2d version (no overflow checks, slightly slower, not preferred for square / cubic domains with side length power of 2...)
-int64_t gilbert_d2xyz_r(uint64_t dst_idx, uint64_t cur_idx,
-                        int64_t *xres, int64_t *yres, int64_t *zres,
-                        int64_t ax, int64_t ay, int64_t az,
-                        int64_t bx, int64_t by, int64_t bz,
-                        int64_t cx, int64_t cy, int64_t cz)
+static inline int64_t gilbert_d2xyz_r(uint64_t dst_idx, uint64_t cur_idx,
+                                      int64_t *xres, int64_t *yres, int64_t *zres,
+                                      int64_t ax, int64_t ay, int64_t az,
+                                      int64_t bx, int64_t by, int64_t bz,
+                                      int64_t cx, int64_t cy, int64_t cz)
 {
     uint64_t nxt_idx;
     uint64_t _di;
@@ -1025,7 +1025,7 @@ int64_t gilbert_d2xyz_r(uint64_t dst_idx, uint64_t cur_idx,
 
 // d -> (x,y,z) on a gilbert curve for an arbitrary 3d domain
 // note: no overflow checks!
-int64_t gilbert_d2xyz(int64_t *x, int64_t *y, int64_t *z, uint64_t idx, int64_t width, int64_t height, int64_t depth)
+static inline int64_t gilbert_d2xyz(int64_t *x, int64_t *y, int64_t *z, uint64_t idx, int64_t width, int64_t height, int64_t depth)
 {
     *x = 0;
     *y = 0;
