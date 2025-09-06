@@ -16,7 +16,9 @@
 // stop : calculate time difference (for weights) and create new partitioning
 typedef enum {
     START_LB_SEGMENT,
-    STOP_LB_SEGMENT
+    STOP_LB_SEGMENT,
+    PAUSE_LB_SEGMENT,
+    RESUME_LB_SEGMENT
 } Laik_LBState;
 
 // enum defining currently available load balancing algorithms
@@ -74,5 +76,8 @@ void laik_lb_switch_and_free(Laik_Partitioning **part, Laik_Partitioning **npart
 
 // free internal data structures (called on finalize)
 void laik_lb_free();
+
+// set custom weight array to be used
+void laik_lb_set_ext_weights(double *weights);
 
 #endif

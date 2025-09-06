@@ -13,6 +13,7 @@ foreach (example
     "markov-ser"
     "md"
     "md-ser"
+    "md-lb"
     "md3d"
     "md3d-ser"
     "propagation1d"

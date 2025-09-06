@@ -101,6 +101,7 @@
 ../examples/markov.c
 ../examples/markov2.c
 ../examples/md.c
+../examples/md-lb.c
 ../examples/md3d.c
 ../examples/md-ser.c
 ../examples/md3d-ser.c

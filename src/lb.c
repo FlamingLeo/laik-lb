@@ -45,6 +45,63 @@ typedef struct LB_SpaceWeightList
 // space weight list (space id + associated weight array)
 static LB_SpaceWeightList *swlist = NULL;
 
+// custom weight array
+static double *ext_weights = NULL;
+
+///////////
+// timer //
+///////////
+
+// a timer used for timing workload intervals
+typedef struct
+{
+    double starttime;
+    double elapsed;
+    bool running;
+} LB_Timer;
+
+// start timer (reset elapsed, register start time)
+static void timer_start(LB_Timer *t)
+{
+    t->elapsed = 0.0;
+    t->starttime = laik_wtime();
+    t->running = true;
+}
+
+// pause timer (add time taken so far to elapsed time)
+// does nothing if the timer hasn't started yet
+static void timer_pause(LB_Timer *t)
+{
+    if (!t->running)
+        return;
+    t->elapsed += laik_wtime() - t->starttime;
+    t->running = false;
+}
+
+// resume timer
+// does nothing if the timer is already running
+static void timer_resume(LB_Timer *t)
+{
+    if (t->running)
+        return;
+    t->starttime = laik_wtime();
+    t->running = true;
+}
+
+// stop timer and obtain elapsed time
+static double timer_stop(LB_Timer *t)
+{
+    if (t->running)
+    {
+        t->elapsed += laik_wtime() - t->starttime;
+        t->running = false;
+    }
+    return t->elapsed;
+}
+
+// timer used for load balancing (zero initialized)
+static LB_Timer timer;
+
 /////////////
 // utility //
 /////////////
@@ -1750,73 +1807,81 @@ static double *init_weights(Laik_Partitioning *p, double ttime)
     int64_t size_z = dims == 3 ? (space->range.to.i[2] - space->range.from.i[2]) : 1;
     int64_t size = size_x * size_y * size_z;
 
-    if (!swl->weights)
-        swl->weights = (double *)safe_malloc(size * sizeof(double));
-    memset(swl->weights, 0, size * sizeof(double));
-
-    laik_log(1, "lb/init_weights: initialized weight array of %ld bytes (%f kB) (dims: %d, size: %ldx%ldx%ld=%ld)\n", size * sizeof(double), .001 * size * sizeof(double), dims, size_x, size_y, size_z, size);
-
-    // calculate weight and fill array at own indices
-    // 1. accumulate number of items
-    // 2. get task weight for task i as time_taken(i) * c / nitems(i), where c is some constant
-    int64_t tnitems = 0;
-    int c = 1000000;
-    for (int r = 0; r < laik_my_rangecount(p); ++r)
+    if (!ext_weights)
     {
-        if (dims == 1)
-        {
-            int64_t from, to;
-            laik_my_range_1d(p, r, &from, &to);
-            tnitems += to - from;
-            laik_log(1, "lb/init_weights: [%ld]->(%ld), tnitems + %ld = %ld\n", from, to, to - from, tnitems);
-        }
-        else if (dims == 2)
-        {
-            int64_t from_x, from_y, to_x, to_y;
-            laik_my_range_2d(p, r, &from_x, &to_x, &from_y, &to_y);
-            int64_t count = (to_x - from_x) * (to_y - from_y);
-            tnitems += count;
-            laik_log(1, "lb/init_weights: [%ld,%ld]->(%ld,%ld), tnitems + %ld = %ld\n", from_x, from_y, to_x, to_y, count, tnitems);
-        }
-        else /* if (dims == 3) */
-        {
-            int64_t from_x, from_y, from_z, to_x, to_y, to_z;
-            laik_my_range_3d(p, r, &from_x, &to_x, &from_y, &to_y, &from_z, &to_z);
-            int64_t count = (to_x - from_x) * (to_y - from_y) * (to_z - from_z);
-            tnitems += count;
-            laik_log(1, "lb/init_weights: [%ld,%ld,%ld]->(%ld,%ld,%ld), tnitems + %ld = %ld\n", from_x, from_y, from_z, to_x, to_y, to_z, count, tnitems);
-        }
-    };
+        if (!swl->weights)
+            swl->weights = (double *)safe_malloc(size * sizeof(double));
 
-    // broadcast weight to own indices
-    double tweight = (ttime * (double)c) / (double)tnitems;
-    laik_log(1, "lb/init_weights: tweight = (%f * %d) / %ld = %f, broadcasting to own indices...\n", ttime, c, tnitems, tweight);
-    for (int r = 0; r < laik_my_rangecount(p); ++r)
-    {
-        if (dims == 1)
+        memset(swl->weights, 0, size * sizeof(double));
+
+        laik_log(1, "lb/init_weights: initialized weight array of %ld bytes (%f kB) (dims: %d, size: %ldx%ldx%ld=%ld)\n", size * sizeof(double), .001 * size * sizeof(double), dims, size_x, size_y, size_z, size);
+
+        // calculate weight and fill array at own indices
+        // 1. accumulate number of items for own task
+        // 2. get task weight for task i as time_taken(i) * c / nitems(i), where c is some constant
+        int64_t tnitems = 0;
+        int c = 1000000;
+        for (int r = 0; r < laik_my_rangecount(p); ++r)
         {
-            int64_t from, to;
-            laik_my_range_1d(p, r, &from, &to);
-            for (int64_t i = from; i < to; ++i)
-                swl->weights[i] = tweight;
-        }
-        else if (dims == 2)
+            if (dims == 1)
+            {
+                int64_t from, to;
+                laik_my_range_1d(p, r, &from, &to);
+                tnitems += to - from;
+                laik_log(1, "lb/init_weights: [%ld]->(%ld), tnitems + %ld = %ld\n", from, to, to - from, tnitems);
+            }
+            else if (dims == 2)
+            {
+                int64_t from_x, from_y, to_x, to_y;
+                laik_my_range_2d(p, r, &from_x, &to_x, &from_y, &to_y);
+                int64_t count = (to_x - from_x) * (to_y - from_y);
+                tnitems += count;
+                laik_log(1, "lb/init_weights: [%ld,%ld]->(%ld,%ld), tnitems + %ld = %ld\n", from_x, from_y, to_x, to_y, count, tnitems);
+            }
+            else /* if (dims == 3) */
+            {
+                int64_t from_x, from_y, from_z, to_x, to_y, to_z;
+                laik_my_range_3d(p, r, &from_x, &to_x, &from_y, &to_y, &from_z, &to_z);
+                int64_t count = (to_x - from_x) * (to_y - from_y) * (to_z - from_z);
+                tnitems += count;
+                laik_log(1, "lb/init_weights: [%ld,%ld,%ld]->(%ld,%ld,%ld), tnitems + %ld = %ld\n", from_x, from_y, from_z, to_x, to_y, to_z, count, tnitems);
+            }
+        };
+
+        // broadcast weight to own indices
+        double tweight = (ttime * (double)c) / (double)tnitems;
+        laik_log(1, "lb/init_weights: tweight = (%f * %d) / %ld = %f, broadcasting to own indices...\n", ttime, c, tnitems, tweight);
+        for (int r = 0; r < laik_my_rangecount(p); ++r)
         {
-            int64_t from_x, from_y, to_x, to_y;
-            laik_my_range_2d(p, r, &from_x, &to_x, &from_y, &to_y);
-            for (int64_t y = from_y; y < to_y; ++y)
-                for (int64_t x = from_x; x < to_x; ++x)
-                    swl->weights[y * size_x + x] = tweight;
-        }
-        else /* if (dims == 3) */
-        {
-            int64_t from_x, from_y, from_z, to_x, to_y, to_z;
-            laik_my_range_3d(p, r, &from_x, &to_x, &from_y, &to_y, &from_z, &to_z);
-            for (int64_t z = from_z; z < to_z; ++z)
+            if (dims == 1)
+            {
+                int64_t from, to;
+                laik_my_range_1d(p, r, &from, &to);
+                for (int64_t i = from; i < to; ++i)
+                    swl->weights[i] = tweight;
+            }
+            else if (dims == 2)
+            {
+                int64_t from_x, from_y, to_x, to_y;
+                laik_my_range_2d(p, r, &from_x, &to_x, &from_y, &to_y);
                 for (int64_t y = from_y; y < to_y; ++y)
                     for (int64_t x = from_x; x < to_x; ++x)
-                        swl->weights[x + size_x * (y + size_y * z)] = tweight;
+                        swl->weights[y * size_x + x] = tweight;
+            }
+            else /* if (dims == 3) */
+            {
+                int64_t from_x, from_y, from_z, to_x, to_y, to_z;
+                laik_my_range_3d(p, r, &from_x, &to_x, &from_y, &to_y, &from_z, &to_z);
+                for (int64_t z = from_z; z < to_z; ++z)
+                    for (int64_t y = from_y; y < to_y; ++y)
+                        for (int64_t x = from_x; x < to_x; ++x)
+                            swl->weights[x + size_x * (y + size_y * z)] = tweight;
+            }
         }
+    }
+    else
+    {
+        swl->weights = ext_weights;
     }
 
     // initialize laik space for aggregating weights if they haven't been initialized yet
@@ -1847,7 +1912,6 @@ static double *init_weights(Laik_Partitioning *p, double ttime)
 // TODO: consider metric where overhead for sending data outweighs possible gains by load balancing, and if this is even necessary / good
 Laik_Partitioning *laik_lb_balance(Laik_LBState state, Laik_Partitioning *partitioning, Laik_LBAlgorithm algorithm)
 {
-    static double time = 0;
     static const int p_stop = 3;       // stopping patience
     static const int p_start = 3;      // starting patience
     static const double t_stop = 0.05; // stop load balancing when relative imbalance is UNDER this threshold for p_stop consecutive times
@@ -1859,11 +1923,26 @@ Laik_Partitioning *laik_lb_balance(Laik_LBState state, Laik_Partitioning *partit
 
     assert(t_stop < t_start && "stopping threshold should be under starting threshold");
 
-    // when starting a new load balancing segment, start timer and do nothing else
+    // handle starting, pausing or resuming timer (no stop, so we don't perform load balancing yet)
+    // return NULL so we can't do anything
     if (state == START_LB_SEGMENT)
     {
         laik_log(1, "lb: starting new load balancing segment lb-%d (stopped? %d)\n", segment, stopped);
-        time = laik_wtime();
+        timer_start(&timer);
+        return NULL;
+    }
+
+    if (state == PAUSE_LB_SEGMENT)
+    {
+        laik_log(1, "lb: pausing load balancing segment lb-%d (stopped? %d)\n", segment, stopped);
+        timer_pause(&timer);
+        return NULL;
+    }
+
+    if (state == RESUME_LB_SEGMENT)
+    {
+        laik_log(1, "lb: resuming load balancing segment lb-%d (stopped? %d)\n", segment, stopped);
+        timer_resume(&timer);
         return NULL;
     }
 
@@ -1875,7 +1954,7 @@ Laik_Partitioning *laik_lb_balance(Laik_LBState state, Laik_Partitioning *partit
     laik_log_append("lb: stopping load balancing segment lb-%d based on partitioning %s using algorithm %s after ", segment, partitioning->name, laik_get_lb_algorithm_name(algorithm));
 
     // check relative imbalance to determine whether or not to perform load balancing
-    double ttime = laik_wtime() - time;
+    double ttime = timer_stop(&timer);
     laik_log_append("%f seconds (stopped? %d)", ttime, stopped);
     laik_log_flush("\n");
 
@@ -1983,4 +2062,9 @@ void laik_lb_switch_and_free(Laik_Partitioning **part, Laik_Partitioning **npart
 void laik_lb_free()
 {
     swlist_free(swlist);
+}
+
+void laik_lb_set_ext_weights(double *weights)
+{
+    ext_weights = weights;
 }

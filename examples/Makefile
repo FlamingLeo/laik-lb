@@ -12,7 +12,7 @@ OPT=-g #$(ASANCOPT)
 
 EXAMPLES = min vsum vsum2 spmv spmv2 \
     jac1d jac1d-ser jac2d jac2d-ser jac2d-lb jac3d jac3d-lb test \
-    lb markov-ser markov markov2 md md-ser md3d md3d-ser \
+    lb markov-ser markov markov2 md md-lb md-ser md3d md3d-ser \
     propagation1d propagation2d \
     resize vsum3 \
     ping_pong \
@@ -52,13 +52,15 @@ jac3d-lb: jac3d-lb.o -lm $(LAIKLIB)
 
 lb: lb.o -lm $(LAIKLIB)
 
-# test: test.o -lm $(LAIKLIB)
+test: test.o -lm $(LAIKLIB)
 
 markov: markov.o $(LAIKLIB)
 
 markov2: markov2.o $(LAIKLIB)
 
 md: md.o -lm $(LAIKLIB)
+
+md-lb: md-lb.o -lm $(LAIKLIB)
 
 md-ser: md-ser.o -lm $(LAIKLIB)
 
