@@ -15,6 +15,7 @@ foreach (example
     "md-ser"
     "md-lb"
     "md3d"
+    "md3d-lb"
     "md3d-ser"
     "propagation1d"
     "propagation2d"

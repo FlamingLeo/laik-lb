@@ -104,6 +104,7 @@
 ../examples/md.c
 ../examples/md-lb.c
 ../examples/md3d.c
+../examples/md3d-lb.c
 ../examples/md-ser.c
 ../examples/md3d-ser.c
 ../examples/propagation1d.c

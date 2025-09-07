@@ -660,7 +660,7 @@ int main(int argc, char **argv)
                     // get weight average across LB iterations
                     if (step % lbevery == (lbevery - 1))
                         weights[global_idx] /= lbevery;
-                } // end c
+                } // end cx
             } // end cy
         } // end ranges
 

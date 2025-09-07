@@ -194,6 +194,65 @@ static inline void apply_reflective_bcs_3d(double *baseX, double *baseY, double 
     }
 }
 
+///////////////////
+// cli arguments //
+///////////////////
+
+// get strategy string
+static const char *stratname(int strat)
+{
+    switch (strat)
+    {
+    case 0:
+        return "cell time";
+    case 1:
+        return "particle interaction";
+    }
+    return "unknown";
+}
+
+// setup lb smoothing
+//
+// defaults:
+//   smoothing off
+//   alpha = 0.15;
+//   rmin  = 0.70;
+//   rmax  = 1.25;
+static void setup_smoothing(const char *str)
+{
+    int smoothing = 0; // to be casted to bool
+    double am = -1.0, rmi = -1.0, rma = -1.0;
+    int rc = sscanf(str, "%d,%lf,%lf,%lf", &smoothing, &am, &rmi, &rma);
+    if (rc == 4)
+        laik_lb_config_smoothing((bool)smoothing, am, rmi, rma);
+    else
+    {
+        fprintf(stderr, "could not parse smoothing string %s!\n", str);
+        exit(EXIT_FAILURE);
+    }
+}
+
+// setup lb start/stop thresholds
+//
+// defaults:
+//   p_stop  = 3;
+//   p_start = 3;
+//   t_stop  = 0.05;
+//   t_start = 0.10;
+static void setup_thresholds(const char *str)
+{
+    int pstop = -1, pstart = -1;
+    double tstop = -1.0, tstart = -1.0;
+    int rc = sscanf(str, "%d,%d,%lf,%lf", &pstop, &pstart, &tstop, &tstart);
+    if (rc == 4)
+        laik_lb_config_thresholds(pstop, pstart, tstop, tstart);
+    else
+    {
+        fprintf(stderr, "could not parse threshold string %s!\n", str);
+        exit(EXIT_FAILURE);
+    }
+}
+
 //////////
 // main //
 //////////
@@ -205,22 +264,86 @@ int main(int argc, char **argv)
     Laik_Instance *inst = laik_init(&argc, &argv);
     Laik_Group *world = laik_world(inst);
     int myid = laik_myid(world);
-    bool profiling = (argc > 1 && strcmp(argv[1], "-p") == 0);
+    bool profiling = false, lboutput = false;
+    int weightstrat = 0;                  // weight calculation strategy to use (0: time per cell, 1: particle proxy)
+    int lbevery = 150;                    // do load balancing every __ iterations
+    Laik_LBAlgorithm lbalgo = LB_GILBERT; // load balancing algorithm of choice
+
+    // collect command line arguments
+    //
+    // options:
+    // -a <algo>    : lb algorithm
+    // -l           : show lb times
+    // -n <count>   : do load balancing every n iterations
+    // -p           : export trace data
+    // -s <d,f,f,f> : configure lb smoothing
+    // -t <d,d,f,f> : configure lb thresholds
+    // -w <strat>   : choose weight strat
+    for (int arg = 1; arg < argc; ++arg)
+    {
+        // profiling (svg)
+        if (!strcmp(argv[arg], "-p"))
+            profiling = true;
+
+        // show lb times
+        if (!strcmp(argv[arg], "-l"))
+            lboutput = true;
+
+        // choose (valid!) weight strat
+        if (arg + 1 < argc && !strcmp(argv[arg], "-w"))
+        {
+            weightstrat = atoi(argv[++arg]);
+            if (weightstrat < 0 || weightstrat > 1)
+            {
+                fprintf(stderr, "unknown weight strat!\n");
+                exit(EXIT_FAILURE);
+            }
+        }
+
+        // choose lb iteration count
+        // clamped at 10, but this would still be too low (see: noise)
+        if (arg + 1 < argc && !strcmp(argv[arg], "-n"))
+        {
+            lbevery = atoi(argv[++arg]);
+            if (lbevery < 10)
+                lbevery = 10;
+        }
+
+        // setup smoothing
+        if (arg + 1 < argc && !strcmp(argv[arg], "-s"))
+            setup_smoothing(argv[++arg]);
+
+        // setup thresholds
+        if (arg + 1 < argc && !strcmp(argv[arg], "-t"))
+            setup_thresholds(argv[++arg]);
+
+        // choose lb algorithm (unknown -> check lb.c)
+        if (arg + 1 < argc && !strcmp(argv[arg], "-a"))
+            lbalgo = laik_strtolb(argv[++arg]);
+    }
+
+    // enable svg trace
     if (profiling)
         laik_lbvis_enable_trace(myid, inst);
 
     laik_svg_profiler_enter(inst, __func__);
 
+    // print sim / prog info
     if (myid == 0)
     {
         printf("3D linked-cell Lennard-Jones cuboid collision\n");
         printf("domain: %g x %g x %g, cutoff=%g, dt=%g\n", DOMAIN_X, DOMAIN_Y, DOMAIN_Z, CUTOFF, DT);
+        printf("profiling: %d, lblog: %d\n", profiling, lboutput);
+        printf("weightstrat: %s\n", stratname(weightstrat));
+        printf("using %s with load balancing every %d iterations\n\n", laik_get_lb_algorithm_name(lbalgo), lbevery);
     }
 
     // log every _ iterations
     int print_every = 100;
+    laik_lb_output(lboutput);
 
-    // timer for timing total runtime of integration loop
+    // timers for measuring total integration loop time and per-cell time for LB weights
+    Laik_Timer lbtimer = {0};
     Laik_Timer timer = {0};
 
     // create 1d space for all particles and data containers for each particle property
@@ -333,11 +456,21 @@ int main(int argc, char **argv)
     Laik_Data *data_head_w = laik_new_data(cell_space, laik_Int64); // index of first particle in cell (or -1)
     Laik_Data *data_head_r = laik_new_data(cell_space, laik_Int64);
 
+    // custom weight array for load balancer
+    // note: this will get freed by laik_lb_free (finalize) at the end!
+    double *weights = (double *)malloc(ncells * sizeof(double));
+    if (!weights)
+    {
+        fprintf(stderr, "Could not allocate memory for weight array!\n");
+        exit(EXIT_FAILURE);
+    }
+
     Laik_Partitioner *cell_partitioner_w = laik_new_bisection_partitioner();
     Laik_Partitioner *cell_partitioner_r = laik_new_cornerhalo_partitioner(1);
     Laik_Partitioning *cell_partitioning_master = laik_new_partitioning(laik_Master, world, cell_space, 0);
     Laik_Partitioning *cell_partitioning_w = laik_new_partitioning(cell_partitioner_w, world, cell_space, 0);
     Laik_Partitioning *cell_partitioning_r = laik_new_partitioning(cell_partitioner_r, world, cell_space, cell_partitioning_w);
+    Laik_Partitioning *cpw_new = cell_partitioning_w, *cpr_new = cell_partitioning_r;
 
     int64_t *baseHeadW, *baseHeadR;
 
@@ -351,7 +484,7 @@ int main(int argc, char **argv)
     {
         printf("npart = %ld\n", nparticles);
         printf("Cells: %ld x %ld x %ld = %ld\n", ncells_x, ncells_y, ncells_z, ncells);
-        printf("Running %ld steps (endTime=%g)\n", nsteps, END_TIME);
+        printf("Running %ld steps (endTime=%g)\n\n", nsteps, END_TIME);
     }
 
     // vx, vy, vz, axold, ayold, azold always stay the same (block part)
@@ -471,8 +604,18 @@ int main(int argc, char **argv)
 
         // partition initialized cell list across all tasks
         laik_svg_profiler_enter(inst, "w,r,next: master -> ?/halo/all");
-        laik_switchto_partitioning(data_head_w, cell_partitioning_w, LAIK_DF_Preserve, LAIK_DF_None);
-        laik_switchto_partitioning(data_head_r, cell_partitioning_r, LAIK_DF_Preserve, LAIK_DF_None);
+        if (cell_partitioning_w != cpw_new)
+        {
+            laik_lb_switch_and_free(&cell_partitioning_w, &cpw_new, data_head_w, LAIK_DF_Preserve);
+            laik_lb_switch_and_free(&cell_partitioning_r, &cpr_new, data_head_r, LAIK_DF_Preserve);
+            cpw_new = cell_partitioning_w;
+            cpr_new = cell_partitioning_r;
+        }
+        else
+        {
+            laik_switchto_partitioning(data_head_w, cell_partitioning_w, LAIK_DF_Preserve, LAIK_DF_None);
+            laik_switchto_partitioning(data_head_r, cell_partitioning_r, LAIK_DF_Preserve, LAIK_DF_None);
+        }
         laik_switchto_partitioning(data_next, particle_space_partitioning_all, LAIK_DF_Preserve, LAIK_DF_None);
         laik_svg_profiler_exit(inst, "w,r,next: master -> ?/halo/all");
 
@@ -486,98 +629,154 @@ int main(int argc, char **argv)
         laik_get_map_1d(data_az, 0, (void **)&baseAZ, 0);
         laik_get_map_1d(data_next, 0, (void **)&baseNext, 0);
 
-        uint64_t zsizeW, zstrideW, ysizeW, ystrideW, xsizeW;
-        uint64_t zsizeR, zstrideR, ysizeR, ystrideR, xsizeR;
-        int64_t fromXW, toXW, fromYW, toYW, fromZW, toZW;
-        int64_t fromXR, toXR, fromYR, toYR, fromZR, toZR;
-        laik_get_map_3d(data_head_w, 0, (void **)&baseHeadW, &zsizeW, &zstrideW, &ysizeW, &ystrideW, &xsizeW);
-        laik_get_map_3d(data_head_r, 0, (void **)&baseHeadR, &zsizeR, &zstrideR, &ysizeR, &ystrideR, &xsizeR);
-        laik_my_range_3d(cell_partitioning_w, 0, &fromXW, &toXW, &fromYW, &toYW, &fromZW, &toZW);
-        laik_my_range_3d(cell_partitioning_r, 0, &fromXR, &toXR, &fromYR, &toYR, &fromZR, &toZR);
-
         ////////////////
         // force calc //
         ////////////////
 
+        // initialize potential and weight arrays to 0
         double pot = 0.0;
-        // for all owned cells c... (write part.)
-        for (int64_t cz = 0; cz < (int64_t)zsizeW; ++cz) // note: we iterate over mapping sizes; ordering preserved from 2D -> 3D usage
+        if (step % lbevery == 0)
+            memset(weights, 0, ncells * sizeof(double));
+
+        // start load balancing segment
+        laik_lb_balance(step % lbevery == 0 ? START_LB_SEGMENT : RESUME_LB_SEGMENT, 0, 0);
+        for (int r = 0; r < laik_my_rangecount(cell_partitioning_w); ++r)
         {
-            for (int64_t cy = 0; cy < (int64_t)ysizeW; ++cy)
+            uint64_t zsizeW, zstrideW, ysizeW, ystrideW, xsizeW;
+            uint64_t zsizeR, zstrideR, ysizeR, ystrideR, xsizeR;
+            int64_t fromXW, toXW, fromYW, toYW, fromZW, toZW;
+            int64_t fromXR, toXR, fromYR, toYR, fromZR, toZR;
+            laik_get_map_3d(data_head_w, r, (void **)&baseHeadW, &zsizeW, &zstrideW, &ysizeW, &ystrideW, &xsizeW);
+            laik_get_map_3d(data_head_r, r, (void **)&baseHeadR, &zsizeR, &zstrideR, &ysizeR, &ystrideR, &xsizeR);
+            laik_my_range_3d(cell_partitioning_w, r, &fromXW, &toXW, &fromYW, &toYW, &fromZW, &toZW);
+            laik_my_range_3d(cell_partitioning_r, r, &fromXR, &toXR, &fromYR, &toYR, &fromZR, &toZR);
+
+            // for all owned cells c... (write part...)
+            // note: we iterate over mapping sizes; ordering preserved from 2D -> 3D usage
+            for (int64_t cz = 0; cz < (int64_t)zsizeW; ++cz)
             {
-                for (int64_t cx = 0; cx < (int64_t)xsizeW; ++cx)
+                for (int64_t cy = 0; cy < (int64_t)ysizeW; ++cy)
                 {
-                    // compute linear index according to mapping's lexicographic layout:
-                    int64_t c = cx + cy * ystrideW + cz * zstrideW;
-
-                    // for all particles p in c (globally indexed)...
-                    for (int p = baseHeadW[c]; p != -1; p = baseNext[p])
+                    for (int64_t cx = 0; cx < (int64_t)xsizeW; ++cx)
                     {
-                        int64_t neighbors[27];
-                        int64_t ncount = neighbors_in_read_3d(c,
-                                                              /* w_x  = rowstride  */ ystrideW,
-                                                              /* w_y  = nrows      */ ysizeW,
-                                                              /* w_z  = nslices    */ zsizeW,
-                                                              fromXW, fromYW, fromZW,
-                                                              /* r_x  = rowstride  */ ystrideR,
-                                                              /* r_y  = nrows      */ ysizeR,
-                                                              /* r_z  = nslices    */ zsizeR,
-                                                              fromXR, fromYR, fromZR,
-                                                              neighbors, 27);
+                        // compute linear index according to mapping's lexicographic layout
+                        int64_t c = cx + cy * ystrideW + cz * zstrideW;
 
-                        assert(ncount != -1);
+                        int64_t pcount_c = 0;
+                        int64_t pcount_n = 0;
+                        laik_timer_start(&lbtimer);
 
-                        // for all neighbor cells nc... (read part.)
-                        for (int64_t nci = 0; nci < ncount; ++nci)
+                        // for all particles p in c (globally indexed)...
+                        for (int p = baseHeadW[c]; p != -1; p = baseNext[p])
                         {
-                            int64_t nc = neighbors[nci];
+                            pcount_c++;
+                            int64_t neighbors[27];
+                            int64_t ncount = neighbors_in_read_3d(c,
+                                                                  /* w_x  = rowstride  */ ystrideW,
+                                                                  /* w_y  = nrows      */ ysizeW,
+                                                                  /* w_z  = nslices    */ zsizeW,
+                                                                  fromXW, fromYW, fromZW,
+                                                                  /* r_x  = rowstride  */ ystrideR,
+                                                                  /* r_y  = nrows      */ ysizeR,
+                                                                  /* r_z  = nslices    */ zsizeR,
+                                                                  fromXR, fromYR, fromZR,
+                                                                  neighbors, 27);
 
-                            // for all particles q in nc (also globally indexed)...
-                            for (int q = baseHeadR[nc]; q != -1; q = baseNext[q])
+                            assert(ncount != -1);
+
+                            // for all neighbor cells nc... (read part.)
+                            for (int64_t nci = 0; nci < ncount; ++nci)
                             {
-                                // avoid counting double (n3l)
-                                if (q <= p)
-                                    continue;
+                                int64_t nc = neighbors[nci];
 
-                                // do the formula
-                                double dx = baseX[p] - baseX[q];
-                                double dy = baseY[p] - baseY[q];
-                                double dz = baseZ[p] - baseZ[q];
-                                double r2 = dx * dx + dy * dy + dz * dz;
-
-                                // same particle safety guard
-                                if (r2 <= 1e-12)
-                                    continue;
-
-                                if (r2 <= cutoff2)
+                                // for all particles q in nc (also globally indexed)...
+                                for (int q = baseHeadR[nc]; q != -1; q = baseNext[q])
                                 {
-                                    double invr2 = 1.0 / r2;
-                                    double invr6 = invr2 * invr2 * invr2; // (1/r^2)^3 = 1/r^6
-                                    double sor6 = sigma6 * invr6;         // (sigma^6)/(r^6)
-                                    double sor12 = sor6 * sor6;           // (sigma/r)^12
+                                    pcount_n++;
+                                    // avoid counting double (n3l)
+                                    if (q <= p)
+                                        continue;
 
-                                    // factor = 24*eps*(2*s12 - s6) * (1/r^2)
-                                    double factor = 24.0 * EPSILON * (2.0 * sor12 - sor6) * invr2;
-                                    double fx = factor * dx;
-                                    double fy = factor * dy;
-                                    double fz = factor * dz;
+                                    // do the formula
+                                    double dx = baseX[p] - baseX[q];
+                                    double dy = baseY[p] - baseY[q];
+                                    double dz = baseZ[p] - baseZ[q];
+                                    double r2 = dx * dx + dy * dy + dz * dz;
 
-                                    baseAX[p] += fx / MASS;
-                                    baseAY[p] += fy / MASS;
-                                    baseAZ[p] += fz / MASS;
-                                    baseAX[q] -= fx / MASS;
-                                    baseAY[q] -= fy / MASS;
-                                    baseAZ[q] -= fz / MASS;
+                                    // same particle safety guard
+                                    if (r2 <= 1e-12)
+                                        continue;
 
-                                    double vp = 4.0 * EPSILON * (sor12 - sor6);
-                                    pot += vp;
-                                }
-                            }
+                                    if (r2 <= cutoff2)
+                                    {
+                                        double invr2 = 1.0 / r2;
+                                        double invr6 = invr2 * invr2 * invr2; // (1/r^2)^3 = 1/r^6
+                                        double sor6 = sigma6 * invr6;         // (sigma^6)/(r^6)
+                                        double sor12 = sor6 * sor6;           // (sigma/r)^12
+
+                                        // factor = 24*eps*(2*s12 - s6) * (1/r^2)
+                                        double factor = 24.0 * EPSILON * (2.0 * sor12 - sor6) * invr2;
+                                        double fx = factor * dx;
+                                        double fy = factor * dy;
+                                        double fz = factor * dz;
+
+                                        baseAX[p] += fx / MASS;
+                                        baseAY[p] += fy / MASS;
+                                        baseAZ[p] += fz / MASS;
+                                        baseAX[q] -= fx / MASS;
+                                        baseAY[q] -= fy / MASS;
+                                        baseAZ[q] -= fz / MASS;
+
+                                        double vp = 4.0 * EPSILON * (sor12 - sor6);
+                                        pot += vp;
+                                    }
+                                } // q
+                            } // end nc
+                        } // end p
+                        double taken = laik_timer_stop(&lbtimer);
+
+                        int64_t global_x = fromXW + cx;
+                        int64_t global_y = fromYW + cy;
+                        int64_t global_z = fromZW + cz;
+                        int64_t global_idx = global_x + ncells_x * (global_y + ncells_y * global_z);
+
+                        // update cell weight based on chosen strategy
+                        if (!weightstrat)
+                        {
+                            // time taken for this cell
+                            weights[global_idx] += taken;
                         }
-                    }
-                }
-            }
+                        else
+                        {
+                            // remove neighbor cells counted for each current cell particle
+                            if (pcount_c > 0)
+                                pcount_n = (pcount_n / pcount_c) - pcount_c;
+
+                            // weight based on intra- and inter-particle communication
+                            weights[global_idx] += (/* baseline */ 0.02) +
+                                                   (/* cost per particle */ 1.0 * pcount_c) +
+                                                   (/* inter-cell */ 0.40 * pcount_c * pcount_n) +
+                                                   (/* intra-cell */ 0.25 * pcount_c * pcount_c);
+                        }
+
+                        // get weight average across LB iterations
+                        if (step % lbevery == (lbevery - 1))
+                            weights[global_idx] /= lbevery;
+                    } // end cx
+                } // end cy
+            } // end cz
+        } // end ranges
+
+        // stop load balancing, use custom weights and adjust partitioning pointers
+        if ((step % lbevery == (lbevery - 1)))
+        {
+            laik_lb_set_ext_weights(weights);
+            cpw_new = laik_lb_balance(STOP_LB_SEGMENT, cell_partitioning_w, lbalgo);
+            if (cpw_new != cell_partitioning_w)
+                cpr_new = laik_new_partitioning(cell_partitioner_r, world, cell_space, cpw_new);
         }
+        else
+            laik_lb_balance(PAUSE_LB_SEGMENT, 0, 0);
 
         // aggregate forces for velocity calc
         laik_svg_profiler_enter(inst, "pos: all -> master/block");
@@ -628,10 +827,10 @@ int main(int argc, char **argv)
         }
     }
     laik_svg_profiler_exit(inst, "integration-loop");
-    double taken = laik_timer_stop(&timer);
+    double tfinal = laik_timer_stop(&timer);
 
     if (myid == 0)
-        printf("Done. Time taken: %fs\n", taken);
+        printf("\nDone. Time taken: %fs\n", tfinal);
 
     laik_svg_profiler_exit(inst, __func__);
     laik_svg_profiler_export_json(inst);
