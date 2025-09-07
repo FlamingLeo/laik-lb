@@ -34,25 +34,41 @@ typedef struct
 // while simultaneously supporting load balancing for multiple spaces (partitionings) in one program
 typedef struct LB_SpaceWeightList
 {
-    int id;                          // space id
-    double *weights;                 // weight array corresponding to that space (count not needed, since it's just the total number of elements in that space)
+    int id;          // space id
+    double *weights; // weight array corresponding to that space (count not needed, since it's just the total number of elements in that space)
+    double *prev_weights;
     Laik_Space *weightspace;         // laik space associated with weight array, used in weight initialization
     Laik_Data *weightdata;           // laik data container, used in weight initialization
     Laik_Partitioning *weightpart;   // laik space partitioning, used in weight initialization
     struct LB_SpaceWeightList *next; // next element in list
 } LB_SpaceWeightList;
 
-// space weight list (space id + associated weight array)
-static LB_SpaceWeightList *swlist = NULL;
+static LB_SpaceWeightList *swlist = NULL; // space weight list (space id + associated weight array)
+static double *ext_weights = NULL;        // custom weight array
+static Laik_Timer timer;                  // timer used for load balancing (zero initialized)
+static bool do_print_times = true;        // print out times? (default: yes)
 
-// custom weight array
-static double *ext_weights = NULL;
+///////////////////////////
+// load balancing tuning //
+///////////////////////////
 
-// timer used for load balancing (zero initialized)
-static Laik_Timer timer;
+// load balancing start / stop parameters
+static int p_stop = 3;       // stopping patience
+static int p_start = 3;      // starting patience
+static double t_stop = 0.05; // stop load balancing when relative imbalance is UNDER this threshold for p_stop consecutive times
+static double t_start = 0.1; // restart load balancing when relative imbalance is OVER this threshold for p_start consecutive times
 
-// print out times? (default: yes)
-static bool do_print_times = true;
+// do NOT change these!
+static bool stopped = false; // is load balancing active right now?
+static int p_stopctr = 0;    // consecutive counter for potential stopping
+static int p_startctr = 0;   // consecutive counter for potential restarting
+static int segment = 0;      // load balancing segment, for debugging purposes
+
+// EMA parameters
+static bool do_smoothing = false; // do EMA?
+static double alpha_mul = 0.15;   // smoothing factor in multiplicative domain (0..1)
+static double rmin = 0.7;         // minimum allowed multiplicative change per step
+static double rmax = 1.25;        // maximum allowed multiplicative change per step
 
 /////////////
 // utility //
@@ -100,7 +116,7 @@ static void print_times(double *times, int gsize, double maxdt, double mean)
         if (i < gsize - 1)
             printf(", ");
     }
-    printf("], max dt: %.2f, mean %.2f, rel. imbalance %.2f\n", maxdt, mean, maxdt / mean);
+    printf("], max dt: %.2f, mean %.2f, rel. imbalance %.2f (stopped: %d)\n", maxdt, mean, maxdt / mean, stopped);
 }
 
 // check if a number is a power of 2
@@ -134,6 +150,7 @@ static LB_SpaceWeightList *swlist_create_node(int id)
     LB_SpaceWeightList *node = (LB_SpaceWeightList *)safe_malloc(sizeof(LB_SpaceWeightList));
     node->id = id;
     node->weights = NULL;
+    node->prev_weights = NULL;
     node->weightspace = NULL;
     node->weightdata = NULL;
     node->next = NULL;
@@ -184,6 +201,8 @@ static void swlist_free(LB_SpaceWeightList *head)
         temp = head->next;
         if (head->weights)
             free(head->weights);
+        if (head->prev_weights)
+            free(head->prev_weights);
         if (head->weightpart)
             laik_free_partitioning(head->weightpart);
         if (head->weightspace)
@@ -276,7 +295,7 @@ static double get_idx_weight_3d(double *weights, int64_t size_x, int64_t size_y,
 // done
 //
 // there's probably better ways of doing this, especially for hilbert curves (quadtrees), but this should be versatile enough to work with various algorithms
-// TODO: preprocessing to avoid multiple grid scans
+// TODO (lo): preprocessing to avoid multiple grid scans
 
 // merge rectangles (2d)
 static void merge_rects_then_add_ranges(int *grid1D, int64_t width, int64_t height, Laik_RangeReceiver *r, int tidcount)
@@ -494,7 +513,7 @@ static void merge_cuboids_then_add_ranges(int *grid1D, int64_t width, int64_t he
 // sfc partitioners //
 //////////////////////
 
-// TODO: consider allowing full 64-bit range for indices
+// TODO (lo): consider allowing full 64-bit range for indices
 
 /*            hilbert space filling curve (2D, 3D) using Skilling's bitwise method            */
 /* source:  Programming the Hilbert curve, John Skilling, AIP Conf. Proc. 707, 381–387 (2004) */
@@ -1069,7 +1088,7 @@ static inline int64_t gilbert_d2xyz(int64_t *x, int64_t *y, int64_t *z, uint64_t
 // laik functions start here //
 // ------------------------- //
 
-// TODO: verify types for both
+// TODO (lo): verify types for both
 
 // internal 2d sfc helper function
 static void sfc_2d(Laik_RangeReceiver *r, Laik_PartitionerParams *p, double *weights, Laik_LBAlgorithm algo)
@@ -1659,8 +1678,6 @@ Laik_Partitioner *laik_new_rcb_partitioner(double *weights)
 ////////////////////
 
 // calculate the imbalance to determine whether or not load balancing should be done
-//
-// TODO: consider moving average to smooth out possible noise (EMA)?
 // formula: (max - min) / mean
 static double get_imbalance(Laik_Partitioning *p, double ttime)
 {
@@ -1759,6 +1776,7 @@ static double *init_weights(Laik_Partitioning *p, double ttime)
     int64_t size_z = dims == 3 ? (space->range.to.i[2] - space->range.from.i[2]) : 1;
     int64_t size = size_x * size_y * size_z;
 
+    // if we didn't provide external weights, compute shared weights for indices, assuming identical workload per index
     if (!ext_weights)
     {
         if (!swl->weights)
@@ -1771,6 +1789,8 @@ static double *init_weights(Laik_Partitioning *p, double ttime)
         // calculate weight and fill array at own indices
         // 1. accumulate number of items for own task
         // 2. get task weight for task i as time_taken(i) * c / nitems(i), where c is some constant
+        //
+        // TODO (lo): remove redundant laik_my_range... calls
         int64_t tnitems = 0;
         int c = 1000000;
         for (int r = 0; r < laik_my_rangecount(p); ++r)
@@ -1831,8 +1851,11 @@ static double *init_weights(Laik_Partitioning *p, double ttime)
             }
         }
     }
+    // otherwise, use externally provided weights
+    // note: make sure externally dimensions match!
     else
     {
+        laik_log(1, "lb/init_weights: using external weight array %p...\n", ext_weights);
         swl->weights = ext_weights;
     }
 
@@ -1840,6 +1863,7 @@ static double *init_weights(Laik_Partitioning *p, double ttime)
     // we only check for weightspace since everything should be initialized at once
     if (!swl->weightspace)
     {
+        laik_log(1, "lb/init_weights: initializing new LAIK containers for weights...\n");
         swl->weightspace = laik_new_space_1d(inst, size);
         swl->weightdata = laik_new_data(swl->weightspace, laik_Double);
         swl->weightpart = laik_new_partitioning(laik_All, group, swl->weightspace, NULL);
@@ -1849,30 +1873,89 @@ static double *init_weights(Laik_Partitioning *p, double ttime)
     }
     else
     {
+        laik_log(1, "lb/init_weights: LAIK containers already initialized\n");
         laik_data_provide_memory(swl->weightdata, swl->weights, size * sizeof(double));
     }
 
     // use weights directly as input data
     laik_log(1, "lb/init_weights: aggregating weights...\n");
 
-    // collect times into weights, shared among all tasks
+    // share weights across all tasks (sum, 0 for every index that doesn't belong to current task)
     laik_switchto_partitioning(swl->weightdata, swl->weightpart, LAIK_DF_Preserve, LAIK_RO_Sum);
     laik_svg_profiler_exit(inst, __func__);
+
+    // optional: do EMA
+    if (do_smoothing)
+    {
+        if (swl->prev_weights)
+        {
+            laik_log(1, "lb/init_weights: previous run found, using multiplicative EMA (alpha=%f) + ratio clamp [%f,%f]\n", alpha_mul, rmin, rmax);
+
+            // smooth multiplicatively
+            for (int64_t i = 0; i < size; ++i)
+            {
+                double cur = swl->weights[i];       // aggregated current weight (>= 0)
+                double prev = swl->prev_weights[i]; // previous smoothed weight (>= 0)
+
+                // remain zero if both zero
+                if (cur <= 0.0 && prev <= 0.0)
+                {
+                    swl->weights[i] = 0.0;
+                    swl->prev_weights[i] = 0.0;
+                    continue;
+                }
+
+                // compute multiplicative update factor f that would map prev -> cur in one step
+                // naive instantaneous ratio r_inst = cur / (prev + eps)
+                double r_inst = cur / (prev + 1e-30 /* to prevent divison by zero*/);
+
+                // apply multiplicative EMA on the ratio
+                double r_smoothed = alpha_mul * r_inst + (1.0 - alpha_mul) * 1.0;
+
+                // clamp ratio to avoid extreme jumps
+                if (r_smoothed < rmin)
+                    r_smoothed = rmin;
+                if (r_smoothed > rmax)
+                    r_smoothed = rmax;
+
+                // new weight = prev * r_smoothed
+                double neww = prev * r_smoothed;
+
+                // if prev was zero but cur > 0 (hot new cell), we need to set a base
+                if (prev <= 0.0 && cur > 0.0)
+                {
+                    // initialize from cur but still smooth gently (blend cur and tiny fraction of cur)
+                    neww = alpha_mul * cur + (1.0 - alpha_mul) * (cur * 0.01);
+                }
+
+                // allow absolute minimum zero
+                if (neww <= 0.0)
+                    neww = 0.0;
+
+                swl->weights[i] = neww;
+                swl->prev_weights[i] = neww; // keep prev equal to smoothed value for next round
+            }
+        }
+        else
+        {
+            // first-time initialization: copy aggregated weights into prev
+            laik_log(1, "lb/init_weights: first (smoothed) run, saving weights for multiplicative EMA...\n");
+            swl->prev_weights = (double *)safe_malloc(size * sizeof(double));
+            memcpy(swl->prev_weights, swl->weights, size * sizeof(double));
+        }
+    }
+
+    // done
     return swl->weights;
 }
 
-// TODO: consider metric where overhead for sending data outweighs possible gains by load balancing, and if this is even necessary / good
+////////////////
+// public api //
+////////////////
+
+// TODO (hi): consider metric where overhead for sending data outweighs possible gains by load balancing, and if this is even necessary / good
 Laik_Partitioning *laik_lb_balance(Laik_LBState state, Laik_Partitioning *partitioning, Laik_LBAlgorithm algorithm)
 {
-    static const int p_stop = 3;       // stopping patience
-    static const int p_start = 3;      // starting patience
-    static const double t_stop = 0.05; // stop load balancing when relative imbalance is UNDER this threshold for p_stop consecutive times
-    static const double t_start = 0.1; // restart load balancing when relative imbalance is OVER this threshold for p_start consecutive times
-    static bool stopped = false;
-    static int p_stopctr = 0;
-    static int p_startctr = 0;
-    static int segment = 0; // load balancing segment, for debugging purposes
-
     assert(t_stop < t_start && "stopping threshold should be under starting threshold");
 
     // handle starting, pausing or resuming timer (no stop, so we don't perform load balancing yet)
@@ -2011,16 +2094,43 @@ void laik_lb_switch_and_free(Laik_Partitioning **part, Laik_Partitioning **npart
     laik_svg_profiler_exit(inst, __func__);
 }
 
-void laik_lb_free()
+void laik_lb_free() { swlist_free(swlist); }
+void laik_lb_set_ext_weights(double *weights) { ext_weights = weights; }
+void laik_lb_output(bool output) { do_print_times = output; }
+
+void laik_lb_config_smoothing(bool smoothing, double am, double rmi, double rma)
 {
-    swlist_free(swlist);
+    // check if we want to do smoothing in the first place and do nothing if we don't
+    do_smoothing = smoothing;
+    if (!do_smoothing)
+    {
+        laik_log(1, "lb/do_smoothing: smoothing DISABLED\n");
+        return;
+    }
+
+    // only allow valid values (otherwise do nothing)
+    if (am > 0.0 && am < 1.0)
+        alpha_mul = am;
+    if (rmi > 0.0)
+        rmin = rmi;
+    if (rma > 0.0)
+        rmax = rma;
+
+    laik_log(1, "lb/do_smoothing: smoothing ENABLED: alpha=%f, rmin=%f, rmax=%f\n", alpha_mul, rmin, rmax);
 }
 
-void laik_lb_set_ext_weights(double *weights)
+void laik_lb_config_thresholds(int pstop, int pstart, double tstop, double tstart)
 {
-    ext_weights = weights;
-}
+    // only allow valid values (-1: do nothing)
+    if (pstop > 0)
+        p_stop = pstop;
+    if (pstart > 0)
+        p_start = pstart;
+    if (tstop > 0.0)
+        t_stop = tstop;
+    if (tstart > 0.0)
+        t_start = tstart;
 
-void laik_lb_output(bool output) {
-    do_print_times = output;
+    assert(t_stop < t_start); // also in main lb, just another sanity check here
+    laik_log(1, "lb/config: configured start/stop parameters: p_stop=%d, p_start=%d, t_stop=%f, t_start=%f\n", p_stop, p_start, t_stop, t_start);
 }

@@ -2,6 +2,8 @@
  * 2D Molecular Dynamics example for Load Balancing (parallel).
  * (Lennard-Jones force; collision of two particle cuboids, psuedo-reflective boundaries)
  *
+ * WITH load balancing.
+ *
  * Based on the MD practical course code (WiSe 2024/25) (not a 1:1 port!).
  * https://github.com/FlamingLeo/MolSim (w3t2, specifically)
  *
@@ -52,10 +54,6 @@
 #define B_SIZE_Y 20
 #define B_VX 0.0
 #define B_VY -10.0
-
-// load balancing algorithm
-#define LB_ALGO LB_GILBERT
-#define LB_EVERY 100
 
 // precomputed lj constants
 double sigma6;
@@ -155,6 +153,11 @@ static inline void apply_reflective_bcs(double *baseX, double *baseY, double *ba
     }
 }
 
+///////////////////
+// cli arguments //
+///////////////////
+
+// get strategy string
 static const char *stratname(int strat)
 {
     switch (strat)
@@ -165,6 +168,48 @@ static const char *stratname(int strat)
         return "particle interaction";
     }
     return "unknown";
+}
+
+// setup lb smoothing
+//
+// defaults:
+//   smoothing off
+//   alpha = 0.15;
+//   rmin  = 0.70;
+//   rmax  = 1.25;
+static void setup_smoothing(const char *str)
+{
+    int smoothing = 0; // to be casted to bool
+    double am = -1.0, rmi = -1.0, rma = -1.0;
+    int rc = sscanf(str, "%d,%lf,%lf,%lf", &smoothing, &am, &rmi, &rma);
+    if (rc == 4)
+        laik_lb_config_smoothing((bool)smoothing, am, rmi, rma);
+    else
+    {
+        fprintf(stderr, "could not parse smoothing string %s!\n", str);
+        exit(EXIT_FAILURE);
+    }
+}
+
+// setup lb start/stop thresholds
+//
+// defaults:
+//   p_stop  = 3;
+//   p_start = 3;
+//   t_stop  = 0.05;
+//   t_start = 0.10;
+static void setup_thresholds(const char *str)
+{
+    int pstop = -1, pstart = -1;
+    double tstop = -1.0, tstart = -1.0;
+    int rc = sscanf(str, "%d,%d,%lf,%lf", &pstop, &pstart, &tstop, &tstart);
+    if (rc == 4)
+        laik_lb_config_thresholds(pstop, pstart, tstop, tstart);
+    else
+    {
+        fprintf(stderr, "could not parse threshold string %s!\n", str);
+        exit(EXIT_FAILURE);
+    }
 }
 
 //////////
@@ -179,16 +224,32 @@ int main(int argc, char **argv)
     Laik_Group *world = laik_world(inst);
     int myid = laik_myid(world);
     bool profiling = false, lboutput = false;
-    int weightstrat = 0;
+    int weightstrat = 0;                  // weight calculation strategy to use (0: time per cell, 1: particle proxy)
+    int lbevery = 150;                    // do load balancing every __ iterations
+    Laik_LBAlgorithm lbalgo = LB_GILBERT; // load balancing algorithm of choice
 
     // collect command line arguments
+    //
+    // options:
+    // -a <algo>    : lb algorithm
+    // -l           : show lb times
+    // -n <count>   : do load balancing every n iterations
+    // -p           : export trace data
+    // -s <d,f,f,f> : configure lb smoothing
+    // -t <d,d,f,f> : configure lb thresholds
+    // -w <strat>   : choose weight strat
     for (int arg = 1; arg < argc; ++arg)
     {
+        // profiling (svg)
         if (!strcmp(argv[arg], "-p"))
             profiling = true;
+
+        // show lb times
         if (!strcmp(argv[arg], "-l"))
             lboutput = true;
-        if (arg + 1 < argc && !strcmp(argv[arg], "-s"))
+
+        // choose (valid!) weight strat
+        if (arg + 1 < argc && !strcmp(argv[arg], "-w"))
         {
             weightstrat = atoi(argv[++arg]);
             if (weightstrat < 0 || weightstrat > 1)
@@ -197,6 +258,27 @@ int main(int argc, char **argv)
                 exit(EXIT_FAILURE);
             }
         }
+
+        // choose lb iteration count
+        // clamped at 10, but this would still be too low (see: noise)
+        if (arg + 1 < argc && !strcmp(argv[arg], "-n"))
+        {
+            lbevery = atoi(argv[++arg]);
+            if (lbevery < 10)
+                lbevery = 10;
+        }
+
+        // setup smoothing
+        if (arg + 1 < argc && !strcmp(argv[arg], "-s"))
+            setup_smoothing(argv[++arg]);
+
+        // setup thresholds
+        if (arg + 1 < argc && !strcmp(argv[arg], "-t"))
+            setup_thresholds(argv[++arg]);
+
+        // choose lb algorithm (unknown -> check lb.c)
+        if (arg + 1 < argc && !strcmp(argv[arg], "-a"))
+            lbalgo = laik_strtolb(argv[++arg]);
     }
 
     // enable svg trace
@@ -211,7 +293,8 @@ int main(int argc, char **argv)
         printf("2D linked-cell Lennard-Jones cuboid collision\n");
         printf("domain: %g x %g, cutoff=%g, dt=%g\n", DOMAIN_X, DOMAIN_Y, CUTOFF, DT);
         printf("profiling: %d, lblog: %d\n", profiling, lboutput);
-        printf("weightstrat: %s\n\n", stratname(weightstrat));
+        printf("weightstrat: %s\n", stratname(weightstrat));
+        printf("using %s with load balancing every %d iterations\n\n", laik_get_lb_algorithm_name(lbalgo), lbevery);
     }
 
     // log every _ iterations
@@ -468,11 +551,11 @@ int main(int argc, char **argv)
 
         // initialize potential and weight arrays to 0
         double pot = 0.0;
-        if (step % LB_EVERY == 0)
+        if (step % lbevery == 0)
             memset(weights, 0, ncells * sizeof(double));
 
         // start load balancing segment
-        laik_lb_balance(step % LB_EVERY == 0 ? START_LB_SEGMENT : RESUME_LB_SEGMENT, 0, 0);
+        laik_lb_balance(step % lbevery == 0 ? START_LB_SEGMENT : RESUME_LB_SEGMENT, 0, 0);
         for (int r = 0; r < laik_my_rangecount(cell_partitioning_w); ++r)
         {
             int64_t ysizeW, ystrideW, xsizeW;
@@ -575,17 +658,17 @@ int main(int argc, char **argv)
                     }
 
                     // get weight average across LB iterations
-                    if (step % LB_EVERY == (LB_EVERY - 1))
-                        weights[global_idx] /= LB_EVERY;
+                    if (step % lbevery == (lbevery - 1))
+                        weights[global_idx] /= lbevery;
                 } // end c
             } // end cy
         } // end ranges
 
         // stop load balancing, use custom weights and adjust partitioning pointers
-        if ((step % LB_EVERY == (LB_EVERY - 1)))
+        if ((step % lbevery == (lbevery - 1)))
         {
             laik_lb_set_ext_weights(weights);
-            cpw_new = laik_lb_balance(STOP_LB_SEGMENT, cell_partitioning_w, LB_ALGO);
+            cpw_new = laik_lb_balance(STOP_LB_SEGMENT, cell_partitioning_w, lbalgo);
             if (cpw_new != cell_partitioning_w)
                 cpr_new = laik_new_partitioning(cell_partitioner_r, world, cell_space, cpw_new);
         }

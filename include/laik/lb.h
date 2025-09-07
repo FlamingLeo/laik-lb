@@ -83,4 +83,10 @@ void laik_lb_set_ext_weights(double *weights);
 // decide whether to print aggregated times in each step
 void laik_lb_output(bool output);
 
+// decide if EMA should be used, and if so, optionally set new parameters (-1: leave default)
+void laik_lb_config_smoothing(bool smoothing, double am, double rmi, double rma);
+
+// configure start/stop parameters (-1: leave default)
+void laik_lb_config_thresholds(int pstop, int pstart, double tstop, double tstart);
+
 #endif
