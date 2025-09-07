@@ -29,5 +29,6 @@
 #include "laik/program.h"
 #include "laik/profiling.h"
 #include "laik/ext.h"
+#include "laik/timer.h"
 
 #endif // LAIK_H

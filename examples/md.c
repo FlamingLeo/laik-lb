@@ -177,6 +177,9 @@ int main(int argc, char **argv)
     // log every _ iterations
     int print_every = 100;
 
+    // timer for timing total runtime of integration loop
+    Laik_Timer timer = {0};
+
     // create 1d space for all particles and data containers for each particle property
     int64_t countA = A_SIZE_X * A_SIZE_Y;
     int64_t countB = B_SIZE_X * B_SIZE_Y;
@@ -307,6 +310,7 @@ int main(int argc, char **argv)
     ////////////////////////////////////
 
     double t = START_TIME;
+    laik_timer_start(&timer);
     laik_svg_profiler_enter(inst, "integration-loop");
     for (long step = 0; step < nsteps; ++step)
     {
@@ -521,9 +525,10 @@ int main(int argc, char **argv)
         }
     }
     laik_svg_profiler_exit(inst, "integration-loop");
+    double taken = laik_timer_stop(&timer);
 
     if (myid == 0)
-        printf("Done.\n");
+        printf("Done. Time taken: %fs\n", taken);
 
     laik_svg_profiler_exit(inst, __func__);
     laik_svg_profiler_export_json(inst);

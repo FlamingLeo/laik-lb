@@ -48,59 +48,11 @@ static LB_SpaceWeightList *swlist = NULL;
 // custom weight array
 static double *ext_weights = NULL;
 
-///////////
-// timer //
-///////////
-
-// a timer used for timing workload intervals
-typedef struct
-{
-    double starttime;
-    double elapsed;
-    bool running;
-} LB_Timer;
-
-// start timer (reset elapsed, register start time)
-static void timer_start(LB_Timer *t)
-{
-    t->elapsed = 0.0;
-    t->starttime = laik_wtime();
-    t->running = true;
-}
-
-// pause timer (add time taken so far to elapsed time)
-// does nothing if the timer hasn't started yet
-static void timer_pause(LB_Timer *t)
-{
-    if (!t->running)
-        return;
-    t->elapsed += laik_wtime() - t->starttime;
-    t->running = false;
-}
-
-// resume timer
-// does nothing if the timer is already running
-static void timer_resume(LB_Timer *t)
-{
-    if (t->running)
-        return;
-    t->starttime = laik_wtime();
-    t->running = true;
-}
-
-// stop timer and obtain elapsed time
-static double timer_stop(LB_Timer *t)
-{
-    if (t->running)
-    {
-        t->elapsed += laik_wtime() - t->starttime;
-        t->running = false;
-    }
-    return t->elapsed;
-}
-
 // timer used for load balancing (zero initialized)
-static LB_Timer timer;
+static Laik_Timer timer;
+
+// print out times? (default: yes)
+static bool do_print_times = true;
 
 /////////////
 // utility //
@@ -1780,7 +1732,7 @@ static double get_imbalance(Laik_Partitioning *p, double ttime)
     laik_log(1, "lb/get_imbalance: maxdt %f, mean %f\n", maxdt, mean);
 
     // print time taken by each task
-    if (task == 0)
+    if (task == 0 && do_print_times)
         print_times(times, gsize, maxdt, mean);
 
     // return relative threshold ((max - min) / mean)
@@ -1928,21 +1880,21 @@ Laik_Partitioning *laik_lb_balance(Laik_LBState state, Laik_Partitioning *partit
     if (state == START_LB_SEGMENT)
     {
         laik_log(1, "lb: starting new load balancing segment lb-%d (stopped? %d)\n", segment, stopped);
-        timer_start(&timer);
+        laik_timer_start(&timer);
         return NULL;
     }
 
     if (state == PAUSE_LB_SEGMENT)
     {
         laik_log(1, "lb: pausing load balancing segment lb-%d (stopped? %d)\n", segment, stopped);
-        timer_pause(&timer);
+        laik_timer_pause(&timer);
         return NULL;
     }
 
     if (state == RESUME_LB_SEGMENT)
     {
         laik_log(1, "lb: resuming load balancing segment lb-%d (stopped? %d)\n", segment, stopped);
-        timer_resume(&timer);
+        laik_timer_resume(&timer);
         return NULL;
     }
 
@@ -1954,7 +1906,7 @@ Laik_Partitioning *laik_lb_balance(Laik_LBState state, Laik_Partitioning *partit
     laik_log_append("lb: stopping load balancing segment lb-%d based on partitioning %s using algorithm %s after ", segment, partitioning->name, laik_get_lb_algorithm_name(algorithm));
 
     // check relative imbalance to determine whether or not to perform load balancing
-    double ttime = timer_stop(&timer);
+    double ttime = laik_timer_stop(&timer);
     laik_log_append("%f seconds (stopped? %d)", ttime, stopped);
     laik_log_flush("\n");
 
@@ -2067,4 +2019,8 @@ void laik_lb_free()
 void laik_lb_set_ext_weights(double *weights)
 {
     ext_weights = weights;
+}
+
+void laik_lb_output(bool output) {
+    do_print_times = output;
 }

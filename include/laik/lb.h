@@ -80,4 +80,7 @@ void laik_lb_free();
 // set custom weight array to be used
 void laik_lb_set_ext_weights(double *weights);
 
+// decide whether to print aggregated times in each step
+void laik_lb_output(bool output);
+
 #endif

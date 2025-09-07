@@ -155,6 +155,18 @@ static inline void apply_reflective_bcs(double *baseX, double *baseY, double *ba
     }
 }
 
+static const char *stratname(int strat)
+{
+    switch (strat)
+    {
+    case 0:
+        return "cell time";
+    case 1:
+        return "particle interaction";
+    }
+    return "unknown";
+}
+
 //////////
 // main //
 //////////
@@ -166,20 +178,49 @@ int main(int argc, char **argv)
     Laik_Instance *inst = laik_init(&argc, &argv);
     Laik_Group *world = laik_world(inst);
     int myid = laik_myid(world);
-    bool profiling = (argc > 1 && strcmp(argv[1], "-p") == 0);
+    bool profiling = false, lboutput = false;
+    int weightstrat = 0;
+
+    // collect command line arguments
+    for (int arg = 1; arg < argc; ++arg)
+    {
+        if (!strcmp(argv[arg], "-p"))
+            profiling = true;
+        if (!strcmp(argv[arg], "-l"))
+            lboutput = true;
+        if (arg + 1 < argc && !strcmp(argv[arg], "-s"))
+        {
+            weightstrat = atoi(argv[++arg]);
+            if (weightstrat < 0 || weightstrat > 1)
+            {
+                fprintf(stderr, "unknown weight strat!\n");
+                exit(EXIT_FAILURE);
+            }
+        }
+    }
+
+    // enable svg trace
     if (profiling)
         laik_lbvis_enable_trace(myid, inst);
 
     laik_svg_profiler_enter(inst, __func__);
 
+    // print simulation / program info...
     if (myid == 0)
     {
         printf("2D linked-cell Lennard-Jones cuboid collision\n");
         printf("domain: %g x %g, cutoff=%g, dt=%g\n", DOMAIN_X, DOMAIN_Y, CUTOFF, DT);
+        printf("profiling: %d, lblog: %d\n", profiling, lboutput);
+        printf("weightstrat: %s\n\n", stratname(weightstrat));
     }
 
     // log every _ iterations
     int print_every = 100;
+    laik_lb_output(lboutput);
+
+    // timers for measuring total integration loop time and per-cell time for LB weights
+    Laik_Timer lbtimer = {0};
+    Laik_Timer timer = {0};
 
     // create 1d space for all particles and data containers for each particle property
     int64_t countA = A_SIZE_X * A_SIZE_Y;
@@ -270,6 +311,7 @@ int main(int argc, char **argv)
     Laik_Data *data_head_r = laik_new_data(cell_space, laik_Int64);
 
     // custom weight array for load balancer
+    // note: this will get freed by laik_lb_free (finalize) at the end!
     double *weights = (double *)malloc(ncells * sizeof(double));
     if (!weights)
     {
@@ -296,7 +338,7 @@ int main(int argc, char **argv)
     {
         printf("npart = %ld\n", nparticles);
         printf("Cells: %ld x %ld = %ld\n", ncells_x, ncells_y, ncells);
-        printf("Running %ld steps (endTime=%g)\n", nsteps, END_TIME);
+        printf("Running %ld steps (endTime=%g)\n\n", nsteps, END_TIME);
     }
 
     // vx, vy, axold, ayold always stay the same (block part)
@@ -320,6 +362,7 @@ int main(int argc, char **argv)
     ////////////////////////////////////
 
     double t = START_TIME;
+    laik_timer_start(&timer);
     laik_svg_profiler_enter(inst, "integration-loop");
     for (long step = 0; step < nsteps; ++step)
     {
@@ -425,7 +468,8 @@ int main(int argc, char **argv)
 
         // initialize potential and weight arrays to 0
         double pot = 0.0;
-        memset(weights, 0, ncells * sizeof(double));
+        if (step % LB_EVERY == 0)
+            memset(weights, 0, ncells * sizeof(double));
 
         // start load balancing segment
         laik_lb_balance(step % LB_EVERY == 0 ? START_LB_SEGMENT : RESUME_LB_SEGMENT, 0, 0);
@@ -449,6 +493,8 @@ int main(int argc, char **argv)
 
                     int64_t pcount_c = 0;
                     int64_t pcount_n = 0;
+                    laik_timer_start(&lbtimer);
+
                     // for all particles p in c (globally indexed)...
                     for (int p = baseHeadW[c]; p != -1; p = baseNext[p])
                     {
@@ -500,20 +546,42 @@ int main(int argc, char **argv)
                                     double vp = 4.0 * EPSILON * (sor12 - sor6);
                                     pot += vp;
                                 }
-                            }
-                        }
-                    }
+                            } // end q
+                        } // end nc
+                    } // end p
+                    double taken = laik_timer_stop(&lbtimer);
+
                     int64_t global_x = fromXW + cx;
                     int64_t global_y = fromYW + cy;
                     int64_t global_idx = global_y * ncells_x + global_x;
-                    if (pcount_c > 0) {
-                        pcount_n = (pcount_n / pcount_c) - pcount_c; 
+
+                    // update cell weight based on chosen strategy
+                    if (!weightstrat)
+                    {
+                        // time taken for this cell
+                        weights[global_idx] += taken;
                     }
-                    weights[global_idx] = 0.02 + pcount_c + 0.4 * pcount_c * pcount_n + 0.5 * pcount_c * pcount_c;
-                }
-            }
-        }
-        // stop load balancing and adjust partitioning pointers
+                    else
+                    {
+                        // remove neighbor cells counted for each current cell particle
+                        if (pcount_c > 0)
+                            pcount_n = (pcount_n / pcount_c) - pcount_c;
+
+                        // weight based on intra- and inter-particle communication
+                        weights[global_idx] += (/* baseline */ 0.02) +
+                                               (/* cost per particle */ 1.0 * pcount_c) +
+                                               (/* inter-cell */ 0.40 * pcount_c * pcount_n) +
+                                               (/* intra-cell */ 0.25 * pcount_c * pcount_c);
+                    }
+
+                    // get weight average across LB iterations
+                    if (step % LB_EVERY == (LB_EVERY - 1))
+                        weights[global_idx] /= LB_EVERY;
+                } // end c
+            } // end cy
+        } // end ranges
+
+        // stop load balancing, use custom weights and adjust partitioning pointers
         if ((step % LB_EVERY == (LB_EVERY - 1)))
         {
             laik_lb_set_ext_weights(weights);
@@ -570,11 +638,13 @@ int main(int argc, char **argv)
                 printf("step %ld / %ld, t=%.4f, E=%.6f\n",
                        step, nsteps, t, total);
         }
-    } // step
+    } // end loop
+
     laik_svg_profiler_exit(inst, "integration-loop");
+    double tfinal = laik_timer_stop(&timer);
 
     if (myid == 0)
-        printf("Done.\n");
+        printf("\nDone. Time taken: %fs\n", tfinal);
 
     laik_svg_profiler_exit(inst, __func__);
     laik_svg_profiler_export_json(inst);
