@@ -651,6 +651,7 @@ int main(int argc, char **argv)
                             pcount_n = (pcount_n / pcount_c) - pcount_c;
 
                         // weight based on intra- and inter-particle communication
+                        // TODO: this probably would not work for CPUs with different speeds, consider taking time into account?
                         weights[global_idx] += (/* baseline */ 0.02) +
                                                (/* cost per particle */ 1.0 * pcount_c) +
                                                (/* inter-cell */ 0.40 * pcount_c * pcount_n) +
