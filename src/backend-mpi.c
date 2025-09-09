@@ -31,6 +31,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include <string.h>
+#include <time.h>
 
 // forward decls, types/structs , global variables
 
@@ -75,6 +76,104 @@ static int mpi_reduce = 1;
 // LAIK_MPI_ASYNC: convert send/recv to isend/irecv? Default: Yes
 static int mpi_async = 1;
 
+// LATENCY: simulate latency
+static int inject_base_ms = 0;       // base delay in ms
+static int inject_per_rank_ms = 0;   // extra ms multiplied by peer rank
+static int inject_per_kb_ms = 0;     // extra ms per KB of msg size
+static int inject_jitter_ms = 0;     // random jitter
+static int inject_local_rank = -1;   // local rank, if we want to inject latency PER LOCAL instead of PER PEER (TARGET)
+static bool inject_enabled = false;
+static bool inject_by_local = false;
+
+// LATENCY: rank mask
+static unsigned char* inject_rank_mask = NULL; // either 0 or 1 per peer rank, size: nprocs
+static int inject_rank_mask_size = 0;
+
+// LATENCY: parse rank list into inject_rank_mask
+// format: comma- or dash-separated (e.g. 0,2,5-7 means 0 and 2 and 5 through 7)
+static void parse_inject_rank_list(const char* s, int nprocs)
+{
+    if (!s) return;
+    
+    // initialize mask string
+    inject_rank_mask = malloc(nprocs);
+    if (!inject_rank_mask) {
+        laik_log(LAIK_LL_Error, "LAIK: cannot allocate inject_rank_mask\n");
+        return;
+    }
+    inject_rank_mask_size = nprocs;
+    memset(inject_rank_mask, 0, nprocs);
+
+    // parse mask
+    const char* p = s;
+    while (*p) {
+        // skip whitespaces
+        while (*p == ' ' || *p == '\t') p++;
+        
+        // get a potential number up to a comma or end
+        char* endptr = NULL;
+        long a = strtol(p, &endptr, 10);
+        if (p == endptr) break;
+        p = endptr;
+        long b = a;
+        
+        // multiple numbers, dash sep.
+        if (*p == '-') {
+            p++;
+            b = strtol(p, &endptr, 10);
+            if (p == endptr) break;
+            p = endptr;
+        }
+
+        // clamp for safety between 0 and nprocs - 1
+        if (a < 0) a = 0;
+        if (b < 0) b = 0;
+        if (a >= nprocs) a = nprocs-1;
+        if (b >= nprocs) b = nprocs-1;
+
+        // write ones per injected peer rank(s)
+        long i;
+        if (a <= b) {
+            for (i = a; i <= b; i++) inject_rank_mask[i] = 1;
+        } else {
+            for (i = b; i <= a; i++) inject_rank_mask[i] = 1;
+        }
+        
+        // go to next number
+        if (*p == ',') p++;
+    }
+}
+
+// LATENCY: check if injection should apply for given peer rank
+// no mask means apply to all peers
+static inline int laik_mpi_should_inject_for_peer(int prank)
+{
+    if (!inject_enabled) return 0;
+    if (inject_rank_mask == NULL) return 1;
+    if (prank < 0 || prank >= inject_rank_mask_size) return 0;
+    return inject_rank_mask[prank] ? 1 : 0;
+}
+
+// LATENCY: inject simulated communication delay
+static void laik_mpi_inject_delay(unsigned int bytes, int peer_rank)
+{
+    if (!inject_enabled) return;
+    if (!laik_mpi_should_inject_for_peer(peer_rank)) return;
+
+    // compute base delay in ms
+    int delay = inject_base_ms;
+    int delay_rank = inject_by_local ? inject_local_rank : peer_rank;
+    if (inject_per_rank_ms) delay += inject_per_rank_ms * delay_rank;
+    if (inject_per_kb_ms) delay += ((int)((bytes + 1023) / 1024)) * inject_per_kb_ms;
+    if (inject_jitter_ms) delay += rand() % (inject_jitter_ms + 1);
+
+    if (delay <= 0) return;
+
+    laik_log(2, "INJECT_DELAY: delayrank=%d bytes=%u -> delay=%d ms\n", delay_rank, bytes, delay);
+
+    // perform delay
+    usleep((useconds_t)delay * 1000u);
+}
 
 //----------------------------------------------------------------
 // buffer space for messages if packing/unpacking from/to not-1d layout
@@ -337,6 +436,9 @@ Laik_Instance* laik_init_mpi(int* argc, char*** argv)
     err = MPI_Comm_rank(d->comm, &rank);
     if (err != MPI_SUCCESS) laik_mpi_panic(err);
 
+    // save local rank for latency injection
+    inject_local_rank = rank;
+
     // Get the name of the processor
     char processor_name[MPI_MAX_PROCESSOR_NAME + 15];
     int name_len;
@@ -371,6 +473,27 @@ Laik_Instance* laik_init_mpi(int* argc, char*** argv)
     // do async convertion?
     str = getenv("LAIK_MPI_ASYNC");
     if (str) mpi_async = atoi(str);
+
+    // do latency simulation?
+    str = getenv("LAIK_INJECT_BASE_MS");
+    if (str) inject_base_ms = atoi(str);
+    str = getenv("LAIK_INJECT_PER_RANK_MS");
+    if (str) inject_per_rank_ms = atoi(str);
+    str = getenv("LAIK_INJECT_PER_KB_MS");
+    if (str) inject_per_kb_ms = atoi(str);
+    str = getenv("LAIK_INJECT_JITTER_MS");
+    if (str) inject_jitter_ms = atoi(str);
+    str = getenv("LAIK_INJECT_RANKS");
+    if (str) parse_inject_rank_list(str, size);
+    str = getenv("LAIK_INJECT_BY");
+    if (str && !strcmp(str, "local")) inject_by_local = true;
+
+    inject_enabled = (inject_base_ms || inject_per_rank_ms || inject_per_kb_ms || inject_jitter_ms);
+    if (inject_enabled) {
+        srand((unsigned)(time(NULL) ^ rank));
+        laik_log(2, "MPI backend: delay injection enabled (base %d ms, per_rank %d ms, per_kb %d ms, jitter %d ms, ranks=%s, local? %d)\n",
+                 inject_base_ms, inject_per_rank_ms, inject_per_kb_ms, inject_jitter_ms, (str ? str : "(all)"), inject_by_local);
+    }
 
     mpi_instance = inst;
     return inst;
@@ -482,6 +605,7 @@ void laik_mpi_exec_packAndSend(Laik_Mapping* map, Laik_Range* range,
         packed = (map->layout->pack)(map, range, &idx,
                                      packbuf, PACKBUFSIZE);
         assert(packed > 0);
+        laik_mpi_inject_delay((unsigned)packed * (unsigned)map->data->elemsize, to_rank);
         int err = MPI_Send(packbuf, (int) packed,
                            dataType, to_rank, tag, comm);
         if (err != MPI_SUCCESS) laik_mpi_panic(err);
@@ -509,6 +633,7 @@ void laik_mpi_exec_recvAndUnpack(Laik_Mapping* map, Laik_Range* range,
         if (err != MPI_SUCCESS) laik_mpi_panic(err);
         err = MPI_Get_count(&st, dataType, &recvCount);
         if (err != MPI_SUCCESS) laik_mpi_panic(err);
+        laik_mpi_inject_delay((unsigned)recvCount * (unsigned)elemsize, from_rank); // for accurate sleep time based on bytes instead of max alloc. PACKBUFSIZE / elemsize
 
         unpacked = (map->layout->unpack)(map, range, &idx,
                                          packbuf, recvCount * elemsize);
@@ -584,12 +709,14 @@ void laik_mpi_exec_groupReduce(Laik_TransitionContext* tc,
 
         if (laik_trans_isInGroup(t, a->inputGroup, myid)) {
             laik_log(1, "        exec MPI_Send to T%d", reduceTask);
+            laik_mpi_inject_delay((unsigned)a->count * (unsigned)data->elemsize, reduceTask);
             err = MPI_Send(a->fromBuf, (int) a->count, dataType,
                            reduceTask, 1, comm);
             if (err != MPI_SUCCESS) laik_mpi_panic(err);
         }
         if (laik_trans_isInGroup(t, a->outputGroup, myid)) {
             laik_log(1, "        exec MPI_Recv from T%d", reduceTask);
+            laik_mpi_inject_delay((unsigned)a->count * (unsigned)data->elemsize, reduceTask);
             err = MPI_Recv(a->toBuf, (int) a->count, dataType,
                            reduceTask, 1, comm, &st);
             if (err != MPI_SUCCESS) laik_mpi_panic(err);
@@ -631,6 +758,7 @@ void laik_mpi_exec_groupReduce(Laik_TransitionContext* tc,
                  inTask, off, a->count);
 
         bufOff[ii++] = off;
+        laik_mpi_inject_delay((unsigned)a->count * (unsigned)data->elemsize, inTask);
         err = MPI_Recv(packbuf + off, (int) a->count, dataType,
                        inTask, 1, comm, &st);
         if (err != MPI_SUCCESS) laik_mpi_panic(err);
@@ -672,6 +800,7 @@ void laik_mpi_exec_groupReduce(Laik_TransitionContext* tc,
         }
 
         laik_log(1, "        exec MPI_Send result to T%d", outTask);
+        laik_mpi_inject_delay((unsigned)a->count * (unsigned)data->elemsize, outTask);
         err = MPI_Send(a->toBuf, (int) a->count, dataType, outTask, 1, comm);
         if (err != MPI_SUCCESS) laik_mpi_panic(err);
     }
@@ -755,6 +884,7 @@ void laik_mpi_exec(Laik_ActionSeq* as)
             // MPI-specific action: call MPI_Isend
             Laik_A_MpiIsend* aa = (Laik_A_MpiIsend*) a;
             assert(aa->req_id < req_count);
+            laik_mpi_inject_delay((unsigned)aa->count * (unsigned)elemsize, aa->to_rank);
             err = MPI_Isend(aa->buf, aa->count,
                             dataType, aa->to_rank, tag, comm, req + aa->req_id);
             if (err != MPI_SUCCESS) laik_mpi_panic(err);
@@ -765,6 +895,7 @@ void laik_mpi_exec(Laik_ActionSeq* as)
             // MPI-specific action: exec MPI_IRecv
             Laik_A_MpiIrecv* aa = (Laik_A_MpiIrecv*) a;
             assert(aa->req_id < req_count);
+            laik_mpi_inject_delay((unsigned)aa->count * (unsigned)elemsize, aa->from_rank);
             err = MPI_Irecv(aa->buf, aa->count,
                             dataType, aa->from_rank, tag, comm, req + aa->req_id);
             if (err != MPI_SUCCESS) laik_mpi_panic(err);
@@ -784,6 +915,7 @@ void laik_mpi_exec(Laik_ActionSeq* as)
             assert(ba->fromMapNo < fromList->count);
             Laik_Mapping* fromMap = &(fromList->map[ba->fromMapNo]);
             assert(fromMap->base != 0);
+            laik_mpi_inject_delay((unsigned)ba->count * (unsigned)elemsize, ba->rank);
             err = MPI_Send(fromMap->base + ba->offset, ba->count,
                            dataType, ba->rank, tag, comm);
             if (err != MPI_SUCCESS) laik_mpi_panic(err);
@@ -793,6 +925,7 @@ void laik_mpi_exec(Laik_ActionSeq* as)
         case LAIK_AT_RBufSend: {
             Laik_A_RBufSend* aa = (Laik_A_RBufSend*) a;
             assert(aa->bufID < ASEQ_BUFFER_MAX);
+            laik_mpi_inject_delay((unsigned)aa->count * (unsigned)elemsize, aa->to_rank);
             err = MPI_Send(as->buf[aa->bufID] + aa->offset, aa->count,
                            dataType, aa->to_rank, tag, comm);
             if (err != MPI_SUCCESS) laik_mpi_panic(err);
@@ -801,6 +934,7 @@ void laik_mpi_exec(Laik_ActionSeq* as)
 
         case LAIK_AT_BufSend: {
             Laik_A_BufSend* aa = (Laik_A_BufSend*) a;
+            laik_mpi_inject_delay((unsigned)aa->count * (unsigned)elemsize, aa->to_rank);
             err = MPI_Send(aa->buf, aa->count,
                            dataType, aa->to_rank, tag, comm);
             if (err != MPI_SUCCESS) laik_mpi_panic(err);
@@ -811,6 +945,7 @@ void laik_mpi_exec(Laik_ActionSeq* as)
             assert(ba->toMapNo < toList->count);
             Laik_Mapping* toMap = &(toList->map[ba->toMapNo]);
             assert(toMap->base != 0);
+            laik_mpi_inject_delay((unsigned)ba->count * (unsigned)elemsize, ba->rank);
             err = MPI_Recv(toMap->base + ba->offset, ba->count,
                            dataType, ba->rank, tag, comm, &st);
             if (err != MPI_SUCCESS) laik_mpi_panic(err);
@@ -825,6 +960,7 @@ void laik_mpi_exec(Laik_ActionSeq* as)
         case LAIK_AT_RBufRecv: {
             Laik_A_RBufRecv* aa = (Laik_A_RBufRecv*) a;
             assert(aa->bufID < ASEQ_BUFFER_MAX);
+            laik_mpi_inject_delay((unsigned)aa->count * (unsigned)elemsize, aa->from_rank);
             err = MPI_Recv(as->buf[aa->bufID] + aa->offset, aa->count,
                            dataType, aa->from_rank, tag, comm, &st);
             if (err != MPI_SUCCESS) laik_mpi_panic(err);
@@ -838,6 +974,7 @@ void laik_mpi_exec(Laik_ActionSeq* as)
 
         case LAIK_AT_BufRecv: {
             Laik_A_BufRecv* aa = (Laik_A_BufRecv*) a;
+            laik_mpi_inject_delay((unsigned)aa->count * (unsigned)elemsize, aa->from_rank);
             err = MPI_Recv(aa->buf, aa->count,
                            dataType, aa->from_rank, tag, comm, &st);
             if (err != MPI_SUCCESS) laik_mpi_panic(err);
