@@ -43,11 +43,6 @@ int main_1d(int argc, char *argv[], int64_t spsize, int lcount, bool do_visualiz
     int iterations = (id + 1) * 10;
     double c = (262144.0 / (double)spsize) * 0.5; // sleep time constant multiplier (def. max: ~1.31s)
 
-    // log range (debug)
-    int64_t from, to;
-    laik_my_range_1d(part, 0, &from, &to);
-    laik_log(2, "[main1d] init. range [%ld, %ld) count %ld; performing %d iterations \n", from, to, to - from, iterations);
-
     // run the example lcount times to test load balancing (and stopping threshold)
     // maybe use laik's iteration functionality somewhere here?
     for (int i = 0; i < lcount; ++i)
@@ -115,12 +110,6 @@ int main_2d(int argc, char *argv[], int64_t sdsize, int lcount, Laik_LBAlgorithm
 
     int iterations = (id + 1) * 10;
     double c = (512.0 / (double)sdsize) * (512.0 / (double)sdsize) * 0.5; // sleep time constant multiplier (def. max: ~1.31s)
-
-    // debug logging
-    int64_t from_x, from_y, to_x, to_y;
-    laik_my_range_2d(part, 0, &from_x, &to_x, &from_y, &to_y);
-    int64_t count_x = to_x - from_x;
-    int64_t count_y = to_y - from_y;
 
     // modified version of the 1d example, to be changed to something more "professional" later (e.g. n-body)
     for (int loop = 0; loop < lcount; ++loop)
@@ -191,13 +180,6 @@ int main_3d(int argc, char *argv[], int64_t sdsize, int lcount, Laik_LBAlgorithm
     int iterations = (id + 1) * 10;
     double c = (64.0 / (double)sdsize) * (64.0 / (double)sdsize) * (64.0 / (double)sdsize) * 0.5; // sleep time constant multiplier (def. max: ~1.31s)
 
-    // debug logging for local ranges
-    int64_t from_x, to_x, from_y, to_y, from_z, to_z;
-    laik_my_range_3d(part, 0, &from_x, &to_x, &from_y, &to_y, &from_z, &to_z);
-    int64_t count_x = to_x - from_x;
-    int64_t count_y = to_y - from_y;
-    int64_t count_z = to_z - from_z;
-
     for (int loop = 0; loop < lcount; ++loop)
     {
         laik_log(1, "%d ranges\n", laik_my_rangecount(part));
@@ -263,7 +245,7 @@ int main(int argc, char *argv[])
     int64_t sidelen = 0;
     char *algo = NULL;
     bool do_visualization = false;
-    int lcount = 5; // loop count, increase this to test thresholds
+    int lcount = 10; // loop count, increase this to test thresholds
     if (argc > 2)
         do_visualization = atoi(argv[2]);
     if (argc > 3)

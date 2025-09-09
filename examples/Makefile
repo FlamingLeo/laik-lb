@@ -12,11 +12,11 @@ OPT=-g #$(ASANCOPT)
 
 EXAMPLES = min vsum vsum2 spmv spmv2 \
     jac1d jac1d-ser jac2d jac2d-ser jac2d-lb jac3d jac3d-lb test \
-    lb markov-ser markov markov2 md md-lb md-ser md3d md3d-lb md3d-ser \
+    lb lbpp markov-ser markov markov2 md md-lb md-ser md3d md3d-lb md3d-ser \
     propagation1d propagation2d \
     resize vsum3 \
     ping_pong \
-    README-example
+    README-example # test
 
 LDFLAGS = $(OPT) #$(ASANLDOPT)
 CFLAGS = $(OPT) $(WARN) $(DEFS) -std=gnu99 -I$(SDIR)../include
@@ -52,7 +52,9 @@ jac3d-lb: jac3d-lb.o -lm $(LAIKLIB)
 
 lb: lb.o -lm $(LAIKLIB)
 
-test: test.o -lm $(LAIKLIB)
+lbpp: lbpp.o -lm $(LAIKLIB)
+
+# test: test.o -lm $(LAIKLIB)
 
 markov: markov.o $(LAIKLIB)
 
