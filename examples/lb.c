@@ -41,7 +41,7 @@ int main_1d(int argc, char *argv[], int64_t spsize, int lcount, bool do_visualiz
     laik_switchto_partitioning(data, part, LAIK_DF_None, LAIK_RO_None);
 
     int iterations = (id + 1) * 10;
-    double c = 0.25; // sleep time constant multiplier
+    double c = (262144.0 / (double)spsize) * 0.5; // sleep time constant multiplier (def. max: ~1.31s)
 
     // log range (debug)
     int64_t from, to;
@@ -114,7 +114,7 @@ int main_2d(int argc, char *argv[], int64_t sdsize, int lcount, Laik_LBAlgorithm
     laik_switchto_partitioning(data, part, LAIK_DF_None, LAIK_RO_None);
 
     int iterations = (id + 1) * 10;
-    double c = 0.25; // sleep time constant multiplier
+    double c = (512.0 / (double)sdsize) * (512.0 / (double)sdsize) * 0.5; // sleep time constant multiplier (def. max: ~1.31s)
 
     // debug logging
     int64_t from_x, from_y, to_x, to_y;
@@ -189,7 +189,7 @@ int main_3d(int argc, char *argv[], int64_t sdsize, int lcount, Laik_LBAlgorithm
     laik_switchto_partitioning(data, part, LAIK_DF_None, LAIK_RO_None);
 
     int iterations = (id + 1) * 10;
-    double c = 0.5; // sleep time constant multiplier
+    double c = (64.0 / (double)sdsize) * (64.0 / (double)sdsize) * (64.0 / (double)sdsize) * 0.5; // sleep time constant multiplier (def. max: ~1.31s)
 
     // debug logging for local ranges
     int64_t from_x, to_x, from_y, to_y, from_z, to_z;
