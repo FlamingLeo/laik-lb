@@ -159,12 +159,14 @@ int main(int argc, char *argv[])
     // ping pong
     double start_time, end_time;
     start_time = laik_wtime();
-    laik_lb_balance(START_LB_SEGMENT, 0, 0);
+    // uncomment this to completely stop load balancing (only balance inbetween-lb-switch-work + comms, see A, B below)
+    // laik_lb_config_thresholds(-1, -1, 0.0301, -1);
+    laik_lb_balance(START_LB_SEGMENT, 0, 0); // initialize load balancing
     for (int it = 0; it < iters; ++it)
     {
         // ping
         laik_svg_profiler_enter(instance, "ping");
-        laik_switchto_partitioning(array, p1, LAIK_DF_Preserve, LAIK_RO_None);
+        laik_switchto_partitioning(array, p1, LAIK_DF_Preserve, LAIK_RO_None); // COMM: ping
         laik_svg_profiler_exit(instance, "ping");
 
         // CUSTOM: LB
@@ -182,16 +184,16 @@ int main(int argc, char *argv[])
         }
 
         // calculate and switch to new partitioning determined by load balancing algorithm
-        if ((it % lbevery == (lbevery - 1)))
+        if (!laik_lb_is_stopped() && (it % lbevery == (lbevery - 1)))
         {
-            Laik_Partitioning *newpart = laik_lb_balance(STOP_LB_SEGMENT, part, lbalg);
-            laik_lb_balance(START_LB_SEGMENT, 0, 0);
-            laik_lb_switch_and_free(&part, &newpart, lbdata, LAIK_DF_Preserve);
+            Laik_Partitioning *newpart = laik_lb_balance(STOP_LB_SEGMENT, part, lbalg); // stop switch + workload phase
+            laik_lb_balance(START_LB_SEGMENT, 0, 0);                                    // A: restart load balancing immediately to also measure comm. overhead (swap with B for balancing only inbetween + comm)
+            laik_lb_switch_and_free(&part, &newpart, lbdata, LAIK_DF_Preserve);         // B: COMM: load balancing (swap with A for balancing only inbetween + comm)
         }
 
         // pong
         laik_svg_profiler_enter(instance, "pong");
-        laik_switchto_partitioning(array, p0, LAIK_DF_Preserve, LAIK_RO_None);
+        laik_switchto_partitioning(array, p0, LAIK_DF_Preserve, LAIK_RO_None); // COMM: pong
         laik_svg_profiler_exit(instance, "pong");
     }
     end_time = laik_wtime();

@@ -2097,6 +2097,7 @@ void laik_lb_switch_and_free(Laik_Partitioning **part, Laik_Partitioning **npart
 void laik_lb_free() { swlist_free(swlist); }
 void laik_lb_set_ext_weights(double *weights) { ext_weights = weights; }
 void laik_lb_output(bool output) { do_print_times = output; }
+bool laik_lb_is_stopped() { return stopped; }
 
 void laik_lb_config_smoothing(bool smoothing, double am, double rmi, double rma)
 {
