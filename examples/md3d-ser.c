@@ -10,7 +10,7 @@
 #include <stdlib.h>
 #include <math.h>
 #include <string.h>
-#include <time.h>
+#include <sys/time.h>
 
 // simulation parameters
 #define START_TIME 0.0
@@ -82,6 +82,14 @@ static inline void *safe_malloc(size_t n)
         exit(EXIT_FAILURE);
     }
     return p;
+}
+
+static inline double wtime()
+{
+    struct timeval tv;
+    gettimeofday(&tv, 0);
+
+    return tv.tv_sec + 1e-6 * tv.tv_usec;
 }
 
 // initialize particles from two cuboids
@@ -411,10 +419,13 @@ int main()
     long nsteps = (long)((END_TIME - START_TIME) / DT + 0.5);
     printf("Running %ld steps (endTime=%g)\n", nsteps, END_TIME);
 
-    // integration loop (X -> F -> V)
-    double t = START_TIME;
+    // output parameters
     int print_every = 100;
     int write_every = 100;
+
+    // integration loop (X -> F -> V)
+    double t = START_TIME;
+    double tbefore = wtime();
     for (long step = 0; step < nsteps; ++step)
     {
         // store old accelerations
@@ -475,7 +486,9 @@ int main()
 
     double ke_final = compute_kinetic();
     double total_final = ke_final + pot;
-    printf("Done. Final KE=%.6f PE=%.6f Total=%.6f\n", ke_final, pot, total_final);
+    double tafter = wtime();
+    double ttotal = tafter - tbefore;
+    printf("Done. Final KE=%.6f PE=%.6f Total=%.6f\nTime taken: %fs\n", ke_final, pot, total_final, ttotal);
 
     free(x);
     free(y);
