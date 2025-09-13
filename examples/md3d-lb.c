@@ -83,14 +83,25 @@ static inline int64_t neighbors_in_read_3d(int64_t w_idx,
                                            int64_t *out_buf, int64_t out_buf_len)
 {
     if (w_x <= 0 || w_y <= 0 || w_z <= 0 || r_x <= 0 || r_y <= 0 || r_z <= 0)
+    {
+        printf("ERROR: One of these is negative: wx:%ld, wy:%ld, wz:%ld, rx:%ld, ry:%ld, rz:%ld\n", w_x, w_y, w_z, r_x, r_y, r_z);
         return -1;
+    }
     if (!out_buf)
+    {
+        printf("ERROR: out_buf is null!");
         return -1;
+    }
     if (out_buf_len < 27)
+    {
+        printf("ERROR: out_buf_len less than 27: %ld\n", out_buf_len);
         return -1;
-
+    }
     if (w_idx < 0 || w_idx >= w_x * w_y * w_z)
+    {
+        printf("ERROR: w_idx not in valid range [0, %ld): %ld; w_x = %ld, w_y = %ld, w_z = %ld", w_x * w_y * w_z, w_idx, w_x, w_y, w_z);
         return -1;
+    }
 
     // convert 1D index -> (wx, wy, wz)
     int64_t plane = w_x * w_y;
@@ -663,26 +674,27 @@ int main(int argc, char **argv)
                 {
                     for (int64_t cx = 0; cx < (int64_t)xsizeW; ++cx)
                     {
-                        // compute linear index according to mapping's lexicographic layout
-                        int64_t c = cx + cy * ystrideW + cz * zstrideW;
+                        int64_t planeW_can = (int64_t)xsizeW * (int64_t)ysizeW;
+                        int64_t c_can = cx + cy * (int64_t)xsizeW + cz * planeW_can;
+                        int64_t c_stride = cx + cy * (int64_t)ystrideW + cz * (int64_t)zstrideW;
 
                         int64_t pcount_c = 0;
                         int64_t pcount_n = 0;
                         laik_timer_start(&lbtimer);
 
                         // for all particles p in c (globally indexed)...
-                        for (int p = baseHeadW[c]; p != -1; p = baseNext[p])
+                        for (int p = baseHeadW[c_stride]; p != -1; p = baseNext[p])
                         {
                             pcount_c++;
                             int64_t neighbors[27];
-                            int64_t ncount = neighbors_in_read_3d(c,
-                                                                  /* w_x  = rowstride  */ ystrideW,
-                                                                  /* w_y  = nrows      */ ysizeW,
-                                                                  /* w_z  = nslices    */ zsizeW,
+                            int64_t ncount = neighbors_in_read_3d(c_can,
+                                                                  /* w_x  = xsizeW */ xsizeW,
+                                                                  /* w_y  = ysizeW */ ysizeW,
+                                                                  /* w_z  = zsizeW */ zsizeW,
                                                                   fromXW, fromYW, fromZW,
-                                                                  /* r_x  = rowstride  */ ystrideR,
-                                                                  /* r_y  = nrows      */ ysizeR,
-                                                                  /* r_z  = nslices    */ zsizeR,
+                                                                  /* r_x  = xsizeR */ xsizeR,
+                                                                  /* r_y  = ysizeR */ ysizeR,
+                                                                  /* r_z  = zsizeR */ zsizeR,
                                                                   fromXR, fromYR, fromZR,
                                                                   neighbors, 27);
 
@@ -691,10 +703,20 @@ int main(int argc, char **argv)
                             // for all neighbor cells nc... (read part.)
                             for (int64_t nci = 0; nci < ncount; ++nci)
                             {
-                                int64_t nc = neighbors[nci];
+                                int64_t nc_can = neighbors[nci]; // canonical index in read-local x-fastest layout
+
+                                // decode canonical nc -> (wx, wy, wz) in read-local coords
+                                int64_t planeR_can = (int64_t)xsizeR * (int64_t)ysizeR;
+                                int64_t wz = nc_can / planeR_can;
+                                int64_t rem = nc_can % planeR_can;
+                                int64_t wy = rem / xsizeR;
+                                int64_t wx = rem % xsizeR;
+
+                                // convert to stride-based index for baseHeadR
+                                int64_t nc_stride = wx + wy * (int64_t)ystrideR + wz * (int64_t)zstrideR;
 
                                 // for all particles q in nc (also globally indexed)...
-                                for (int q = baseHeadR[nc]; q != -1; q = baseNext[q])
+                                for (int q = baseHeadR[nc_stride]; q != -1; q = baseNext[q])
                                 {
                                     pcount_n++;
                                     // avoid counting double (n3l)

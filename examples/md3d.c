@@ -507,21 +507,24 @@ int main(int argc, char **argv)
             {
                 for (int64_t cx = 0; cx < (int64_t)xsizeW; ++cx)
                 {
-                    // compute linear index according to mapping's lexicographic layout:
-                    int64_t c = cx + cy * ystrideW + cz * zstrideW;
+                    int64_t planeW = (int64_t)xsizeW * (int64_t)ysizeW;
+                    int64_t c_canonical = cx + cy * (int64_t)xsizeW + cz * planeW;
+                    
+                    // stride-based index for accessing mapped memory
+                    int64_t c_stride = cx + cy * (int64_t)ystrideW + cz * (int64_t)zstrideW;
 
                     // for all particles p in c (globally indexed)...
-                    for (int p = baseHeadW[c]; p != -1; p = baseNext[p])
+                    for (int p = baseHeadW[c_stride]; p != -1; p = baseNext[p])
                     {
                         int64_t neighbors[27];
-                        int64_t ncount = neighbors_in_read_3d(c,
-                                                              /* w_x  = rowstride  */ ystrideW,
-                                                              /* w_y  = nrows      */ ysizeW,
-                                                              /* w_z  = nslices    */ zsizeW,
+                        int64_t ncount = neighbors_in_read_3d(c_canonical,
+                                                              /* w_x = xsize */ xsizeW,
+                                                              /* w_y = ysize */ ysizeW,
+                                                              /* w_z = zsize */ zsizeW,
                                                               fromXW, fromYW, fromZW,
-                                                              /* r_x  = rowstride  */ ystrideR,
-                                                              /* r_y  = nrows      */ ysizeR,
-                                                              /* r_z  = nslices    */ zsizeR,
+                                                              /* r_x = xsizeR */ xsizeR,
+                                                              /* r_y = ysizeR */ ysizeR,
+                                                              /* r_z = zsizeR */ zsizeR,
                                                               fromXR, fromYR, fromZR,
                                                               neighbors, 27);
 
@@ -530,10 +533,18 @@ int main(int argc, char **argv)
                         // for all neighbor cells nc... (read part.)
                         for (int64_t nci = 0; nci < ncount; ++nci)
                         {
-                            int64_t nc = neighbors[nci];
+                            int64_t nc_can = neighbors[nci]; // canonical read-local index (x-fastest)
+
+                            // decode canonical neighbor index into (nx,ny,nz)
+                            int64_t planeR = (int64_t)xsizeR * (int64_t)ysizeR;
+                            int64_t wz = nc_can / planeR;
+                            int64_t rem = nc_can % planeR;
+                            int64_t wy = rem / xsizeR;
+                            int64_t wx = rem % xsizeR;
+                            int64_t nc_stride = wx + wy * (int64_t)ystrideR + wz * (int64_t)zstrideR;
 
                             // for all particles q in nc (also globally indexed)...
-                            for (int q = baseHeadR[nc]; q != -1; q = baseNext[q])
+                            for (int q = baseHeadR[nc_stride]; q != -1; q = baseNext[q])
                             {
                                 // avoid counting double (n3l)
                                 if (q <= p)
