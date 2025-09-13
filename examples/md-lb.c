@@ -223,7 +223,7 @@ int main(int argc, char **argv)
     Laik_Instance *inst = laik_init(&argc, &argv);
     Laik_Group *world = laik_world(inst);
     int myid = laik_myid(world);
-    bool profiling = false, lboutput = false;
+    bool profiling = false, lboutput = false, output = true;
     int weightstrat = 0;                  // weight calculation strategy to use (0: time per cell, 1: particle proxy)
     int lbevery = 150;                    // do load balancing every __ iterations
     Laik_LBAlgorithm lbalgo = LB_GILBERT; // load balancing algorithm of choice
@@ -247,6 +247,10 @@ int main(int argc, char **argv)
         // show lb times
         if (!strcmp(argv[arg], "-l"))
             lboutput = true;
+
+        // do general output (disable this for accurate profiling!)
+        if (!strcmp(argv[arg], "-o"))
+            output = false;
 
         // choose (valid!) weight strat
         if (arg + 1 < argc && !strcmp(argv[arg], "-w"))
@@ -702,8 +706,9 @@ int main(int argc, char **argv)
 
         t += DT;
 
-        // follow intermediate state via kinetic energy (over particles)
-        if ((step % print_every) == 0)
+        // optionally output by following intermediate state via kinetic energy (over particles)
+        // note that disabling output drastically reduces total time taken not just because of I/O, but also because we don't switch here constantly to compute kinetic energy
+        if (output && (step % print_every) == 0)
         {
             double ke = 0.0;
             for (int i = 0; i < count; ++i)
