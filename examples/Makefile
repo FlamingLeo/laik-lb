@@ -16,16 +16,19 @@ EXAMPLES = min vsum vsum2 spmv spmv2 \
     propagation1d propagation2d \
     resize vsum3 \
     ping_pong \
-    README-example # test
+    README-example \
+    md2d_omp_simple md2d_omp_task md3d_omp_simple md3d_omp_task \
+    # test
 
 LDFLAGS = $(OPT) #$(ASANLDOPT)
 CFLAGS = $(OPT) $(WARN) $(DEFS) -std=gnu99 -I$(SDIR)../include
 LAIKLIB = $(abspath ../liblaik.so)
+OMP_FLAGS = -fopenmp
 
 all: $(EXAMPLES)
 
 %.o: $(SDIR)%.c
-	$(CC) -c $(CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) -c $< -o $@
 
 min: min.o $(LAIKLIB)
 
@@ -88,3 +91,15 @@ ping_pong: ping_pong.o $(LAIKLIB)
 
 clean:
 	rm -f *.o *~ *.ppm $(EXAMPLES)
+
+md2d_omp_simple: omp/md2d_omp_simple.c $(LAIKLIB)
+	$(CC) $(CFLAGS) $(OMP_FLAGS) $< $(LAIKLIB) -o $@
+
+md2d_omp_task: omp/md2d_omp_task.c $(LAIKLIB)
+	$(CC) $(CFLAGS) $(OMP_FLAGS) $< $(LAIKLIB) -o $@
+
+md3d_omp_simple: omp/md3d_omp_simple.c $(LAIKLIB)
+	$(CC) $(CFLAGS) $(OMP_FLAGS) $< $(LAIKLIB) -o $@
+
+md3d_omp_task: omp/md3d_omp_task.c $(LAIKLIB)
+	$(CC) $(CFLAGS) $(OMP_FLAGS) $< $(LAIKLIB) -o $@
