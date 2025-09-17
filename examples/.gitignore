@@ -23,6 +23,14 @@ jac2d-lb
 jac2d-ser
 jac3d
 jac3d-lb
+lbpp
+md
+md-lb
+md-ser
+md3d
+md3d-lb
+md3d-ser
+vtk/*
 lb
 test
 markov-ser

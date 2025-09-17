@@ -263,7 +263,7 @@ int main(int argc, char *argv[])
     int64_t sidelen = 0;
     char *algo = NULL;
     bool do_visualization = false;
-    int lcount = 5; // loop count, increase this to test thresholds
+    int lcount = 10; // loop count, increase this to test thresholds
     if (argc > 2)
         do_visualization = atoi(argv[2]);
     if (argc > 3)

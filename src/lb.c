@@ -39,6 +39,46 @@ typedef struct
 // generic helper functions //
 //////////////////////////////
 
+#include <stdint.h>
+#include <assert.h>
+
+// diff between two rangelists
+uint64_t laik_rangelist_diff_bytes(const Laik_RangeList *rl_from, const Laik_RangeList *rl_to)
+{
+    assert(rl_from != NULL);
+    assert(rl_to != NULL);
+
+    uint64_t bytes = 0;
+
+    for (unsigned int i = 0; i < rl_from->count; i++)
+    {
+        const Laik_TaskRange_Gen *tr1 = &rl_from->trange[i];
+        const Laik_Range *r1 = &tr1->range;
+        int task1 = tr1->task;
+
+        for (unsigned int j = 0; j < rl_to->count; j++)
+        {
+            const Laik_TaskRange_Gen *tr2 = &rl_to->trange[j];
+            const Laik_Range *r2 = &tr2->range;
+            int task2 = tr2->task;
+
+            Laik_Range *inter = laik_range_intersect(r1, r2);
+            if (!inter)
+                continue;
+            if (laik_range_isEmpty(inter))
+                continue;
+
+            if (task1 != task2)
+            {
+                uint64_t count = laik_range_size(inter);
+                bytes += count;
+            }
+        }
+    }
+
+    return bytes;
+}
+
 // calculate the difference between the minimum and maximum of the times taken by each task and the mean
 //
 // this is used for determining whether to start or stop load balancing
@@ -1647,6 +1687,10 @@ void runIncrementalRCBPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams 
     // for the first run or some insignificant difference between the current and last rel. imbalances, do global rcb as correction step
     if (isnan(imbaldiff) || imbaldiff < t_imbal)
     {
+        if (laik_myid(p->group) == 0)
+        {
+            printf("diff too small...\n");
+        }
         laik_log(1, "lb/rcb_incr: diff %f < %f, doing global rcb\n", imbaldiff, t_imbal);
         rcb_sl_clear();
         sbl_recompute = true;
@@ -1681,6 +1725,12 @@ void runIncrementalRCBPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams 
                 rcb_3d(r, &(current->range), current->from, current->to, weights, 0);
             current = current->next;
         }
+    }
+
+    if (!laik_myid(p->group))
+    {
+        uint64_t diff = laik_rangelist_diff_bytes(laik_partitioning_allranges(p->other), r->list);
+        printf("total: %ld, diff: %ld, rel: %f\n", laik_space_size(s), diff, (double)diff / (double)laik_space_size(s));
     }
 
     laik_svg_profiler_exit(inst, __func__);
