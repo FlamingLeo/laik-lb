@@ -28,15 +28,19 @@ typedef struct
     Laik_LBAlgorithm algo;
 } LB_SFC_Data;
 
+///////////////////////
+// space weight defs //
+///////////////////////
+
 // helper struct for storing weight arrays for an individual space
 //
 // this is needed to not keep freeing and (re)allocating weight memory on every call
 // while simultaneously supporting load balancing for multiple spaces (partitionings) in one program
 typedef struct LB_SpaceWeightList
 {
-    int id;          // space id
-    double *weights; // weight array corresponding to that space (count not needed, since it's just the total number of elements in that space)
-    double *prev_weights;
+    int id;                          // space id
+    double *weights;                 // weight array corresponding to that space (count not needed, since it's just the total number of elements in that space)
+    double *prev_weights;            // weights from last run, e.g. for smoothing
     Laik_Space *weightspace;         // laik space associated with weight array, used in weight initialization
     Laik_Data *weightdata;           // laik data container, used in weight initialization
     Laik_Partitioning *weightpart;   // laik space partitioning, used in weight initialization
@@ -140,6 +144,97 @@ static inline int log2_int(uint64_t value)
     return log2_tab[((uint64_t)((value - (value >> 1)) * 0x07EDD5E59A4E28C2)) >> 58];
 }
 
+// difference in numbere of elements between two rangelists (how many indices differ in task ids between two rangelists?)
+uint64_t laik_rangelist_diff_bytes(const Laik_RangeList *rl_from, const Laik_RangeList *rl_to)
+{
+    assert(rl_from != NULL);
+    assert(rl_to != NULL);
+
+    uint64_t bytes = 0;
+
+    for (unsigned i = 0; i < rl_from->count; i++)
+    {
+        const Laik_TaskRange_Gen *tr1 = &rl_from->trange[i];
+        const Laik_Range *r1 = &tr1->range;
+        int task1 = tr1->task;
+
+        for (unsigned j = 0; j < rl_to->count; j++)
+        {
+            const Laik_TaskRange_Gen *tr2 = &rl_to->trange[j];
+            const Laik_Range *r2 = &tr2->range;
+            int task2 = tr2->task;
+
+            Laik_Range *inter = laik_range_intersect(r1, r2);
+            if (!inter)
+                continue;
+            if (laik_range_isEmpty(inter))
+                continue;
+
+            if (task1 != task2)
+            {
+                uint64_t count = laik_range_size(inter);
+                bytes += count;
+            }
+        }
+    }
+
+    return bytes;
+}
+
+/////////////////////
+// incremental rcb //
+/////////////////////
+
+// helper struct for incremental RCB partitioner
+// linked list type of second-from-bottom-layer ranges and their associated task pairs for incremental rcb
+// note: this could be computed using the other partitioning but this is easier
+typedef struct LB_RCB_SBL
+{
+    int from, to;     // the task pair
+    Laik_Range range; // the second-layer range
+    struct LB_RCB_SBL *next;
+} LB_RCB_SBL;
+
+// TODO (med): allow incremental rcb for multiple spaces / partitionings simultaneously
+static LB_RCB_SBL *sbl_parents = NULL; // the linked list itself
+static bool sbl_recompute = true;      // should the list be reinitalized (second layer info pushed)?
+
+// add a range to the second-from-bottom-layer range linked list
+static void rcb_sl_push(int from, int to, const Laik_Range *range)
+{
+    LB_RCB_SBL *n = (LB_RCB_SBL *)safe_malloc(sizeof(LB_RCB_SBL));
+    n->from = from;
+    n->to = to;
+    n->range = *range; // struct copy
+    n->next = NULL;
+
+    if (!sbl_parents)
+        sbl_parents = n;
+    else
+    {
+        LB_RCB_SBL *cur = sbl_parents;
+        while (cur->next)
+            cur = cur->next;
+        cur->next = n;
+    }
+}
+
+// clear linked list
+static void rcb_sl_clear()
+{
+    if (!sbl_parents)
+        return;
+
+    LB_RCB_SBL *cur = sbl_parents;
+    while (cur)
+    {
+        LB_RCB_SBL *next = cur->next;
+        free(cur);
+        cur = next;
+    }
+    sbl_parents = NULL;
+}
+
 ////////////////////////////////////////
 // space weight linked list functions //
 ////////////////////////////////////////
@@ -224,12 +319,17 @@ Laik_LBAlgorithm laik_strtolb(const char *str)
 {
     if (strcmp(str, "rcb") == 0)
         return LB_RCB;
+    else if (strcmp(str, "rcbincr") == 0 || strcmp(str, "rcbiter") == 0)
+        return LB_RCB_INCR;
     else if (strcmp(str, "hilbert") == 0)
         return LB_HILBERT;
     else if (strcmp(str, "gilbert") == 0)
         return LB_GILBERT;
     else
+    {
+        laik_log(LAIK_LL_Error, "lb/strtolb: unknown load balancing algorithm! defaulting to rcb...");
         return LB_RCB;
+    }
 }
 
 // public: get algorithm string from enum
@@ -239,6 +339,8 @@ const char *laik_get_lb_algorithm_name(Laik_LBAlgorithm algo)
     {
     case LB_RCB:
         return "rcb";
+    case LB_RCB_INCR:
+        return "rcbincr";
     case LB_HILBERT:
         return "hilbert";
     case LB_GILBERT:
@@ -1309,7 +1411,7 @@ void runSFCPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams *p)
 
 Laik_Partitioner *laik_new_sfc_partitioner(double *weights, Laik_LBAlgorithm algo)
 {
-    assert((algo != LB_RCB) && "that's not a space-filling curve!");
+    assert((algo != LB_RCB) && (algo != LB_RCB_INCR) && "that's not a space-filling curve!");
 
     LB_SFC_Data *data = (LB_SFC_Data *)safe_malloc(sizeof(LB_SFC_Data));
     data->weights = weights;
@@ -1326,7 +1428,7 @@ Laik_Partitioner *laik_new_sfc_partitioner(double *weights, Laik_LBAlgorithm alg
 //
 // note: like the range weight function above, i've separated this into a 1d and 2d version
 //       partially due to recursion, mainly due to differences in the algorithm to avoid cluttering the function with ifs
-static void rcb_1d(Laik_RangeReceiver *r, Laik_Range *range, int fromTask, int toTask, double *weights)
+static void rcb_1d(Laik_RangeReceiver *r, Laik_Range *range, int fromTask, int toTask, double *weights, bool rec)
 {
     Laik_Instance *inst = r->params->space->inst;
     laik_svg_profiler_enter(inst, __func__);
@@ -1338,10 +1440,17 @@ static void rcb_1d(Laik_RangeReceiver *r, Laik_Range *range, int fromTask, int t
     int count = toTask - fromTask + 1;
     if (count == 1 || from > to)
     {
+        // for odd task numbers, we got from the previous step if this child has a brother
+        if (rec && sbl_recompute)
+            rcb_sl_push(fromTask, toTask, range);
         laik_append_range(r, fromTask, range, 0, 0);
         laik_svg_profiler_exit(inst, __func__);
         return;
     }
+
+    // push second-from-bottom layer range to linked list for incremental rcb
+    if (count == 2 && sbl_recompute)
+        rcb_sl_push(fromTask, toTask, range);
 
     // calculate how many procs go left vs. right
     int lcount = count / 2;
@@ -1375,33 +1484,40 @@ static void rcb_1d(Laik_RangeReceiver *r, Laik_Range *range, int fromTask, int t
     Laik_Range r1 = *range, r2 = *range;
     r1.to.i[0] = split;
     r2.from.i[0] = split;
-    rcb_1d(r, &r1, fromTask, tmid, weights);
-    rcb_1d(r, &r2, tmid + 1, toTask, weights);
+    rcb_1d(r, &r1, fromTask, tmid, weights, (count & 1));
+    rcb_1d(r, &r2, tmid + 1, toTask, weights, (count & 1));
     laik_svg_profiler_exit(inst, __func__);
 }
 
 // internal 2d rcb helper function; [fromTask - toTask)
 //
 // primary changes are determining the split direction by checking which side is longest and how the weights are computed / accumulated
-static void rcb_2d(Laik_RangeReceiver *r, Laik_Range *range, int fromTask, int toTask, double *weights)
+static void rcb_2d(Laik_RangeReceiver *r, Laik_Range *range, int fromTask, int toTask, double *weights, bool rec)
 {
     Laik_Instance *inst = r->params->space->inst;
     laik_svg_profiler_enter(inst, __func__);
+
+    // if there's only one processor left, stop here
+    int count = toTask - fromTask + 1;
+    if (count == 1)
+    {
+        // for odd task numbers, we got from the previous step if this child has a brother
+        if (rec && sbl_recompute)
+            rcb_sl_push(fromTask, toTask, range);
+        laik_append_range(r, fromTask, range, 0, 0);
+        laik_svg_profiler_exit(inst, __func__);
+        return;
+    }
+
+    // push second-from-bottom layer range to linked list for incremental rcb
+    if (count == 2 && sbl_recompute)
+        rcb_sl_push(fromTask, toTask, range);
 
     int64_t size_x = range->space->range.to.i[0] - range->space->range.from.i[0];
     int64_t from_x = range->from.i[0];
     int64_t from_y = range->from.i[1];
     int64_t to_x = range->to.i[0];
     int64_t to_y = range->to.i[1];
-
-    // if there's only one processor left, stop here
-    int count = toTask - fromTask + 1;
-    if (count == 1)
-    {
-        laik_append_range(r, fromTask, range, 0, 0);
-        laik_svg_profiler_exit(inst, __func__);
-        return;
-    }
 
     // choose split axis (by longest side of region)
     int64_t dx = to_x - from_x;
@@ -1488,35 +1604,41 @@ static void rcb_2d(Laik_RangeReceiver *r, Laik_Range *range, int fromTask, int t
         r2.from.i[0] = split_x;
     }
     laik_log(1, "lb/rcb_2d: split_x: %ld, split_y : %ld, r1: [%ld, %ld] -> (%ld, %ld); r2: [%ld, %ld] -> (%ld, %ld)\n", split_x, split_y, r1.from.i[0], r1.from.i[1], r1.to.i[0], r1.to.i[1], r2.from.i[0], r2.from.i[1], r2.to.i[0], r2.to.i[1]);
-    rcb_2d(r, &r1, fromTask, tmid, weights);
-    rcb_2d(r, &r2, tmid + 1, toTask, weights);
+    rcb_2d(r, &r1, fromTask, tmid, weights, (count & 1));
+    rcb_2d(r, &r2, tmid + 1, toTask, weights, (count & 1));
     laik_svg_profiler_exit(inst, __func__);
 }
 
 // internal 3d rcb helper function
-static void rcb_3d(Laik_RangeReceiver *r, Laik_Range *range, int fromTask, int toTask, double *weights)
+static void rcb_3d(Laik_RangeReceiver *r, Laik_Range *range, int fromTask, int toTask, double *weights, bool rec)
 {
     Laik_Instance *inst = r->params->space->inst;
     laik_svg_profiler_enter(inst, __func__);
 
+    // if there's only one processor left, stop here
+    int count = toTask - fromTask + 1;
+    if (count == 1)
+    {
+        // for odd task numbers, we got from the previous step if this child has a brother
+        if (rec && sbl_recompute)
+            rcb_sl_push(fromTask, toTask, range);
+        laik_append_range(r, fromTask, range, 0, 0);
+        laik_svg_profiler_exit(inst, __func__);
+        return;
+    }
+
+    // push second-from-bottom layer range to linked list for incremental rcb
+    if (count == 2 && sbl_recompute)
+        rcb_sl_push(fromTask, toTask, range);
+
     int64_t size_x = range->space->range.to.i[0] - range->space->range.from.i[0];
     int64_t size_y = range->space->range.to.i[1] - range->space->range.from.i[1];
-
     int64_t from_x = range->from.i[0];
     int64_t from_y = range->from.i[1];
     int64_t from_z = range->from.i[2];
     int64_t to_x = range->to.i[0];
     int64_t to_y = range->to.i[1];
     int64_t to_z = range->to.i[2];
-
-    // if there's only one processor left, stop here
-    int count = toTask - fromTask + 1;
-    if (count == 1)
-    {
-        laik_append_range(r, fromTask, range, 0, 0);
-        laik_svg_profiler_exit(inst, __func__);
-        return;
-    }
 
     // axis: 0 -> x, 1 -> y, 2 -> z
     int64_t dx = to_x - from_x;
@@ -1636,8 +1758,8 @@ static void rcb_3d(Laik_RangeReceiver *r, Laik_Range *range, int fromTask, int t
              r1.from.i[0], r1.from.i[1], r1.from.i[2], r1.to.i[0], r1.to.i[1], r1.to.i[2],
              r2.from.i[0], r2.from.i[1], r2.from.i[2], r2.to.i[0], r2.to.i[1], r2.to.i[2]);
 
-    rcb_3d(r, &r1, fromTask, tmid, weights);
-    rcb_3d(r, &r2, tmid + 1, toTask, weights);
+    rcb_3d(r, &r1, fromTask, tmid, weights, (count & 1));
+    rcb_3d(r, &r2, tmid + 1, toTask, weights, (count & 1));
 
     laik_svg_profiler_exit(inst, __func__);
 }
@@ -1659,11 +1781,69 @@ void runRCBPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams *p)
     Laik_Range range = s->range;
 
     if (dims == 1)
-        rcb_1d(r, &range, 0, tidcount - 1, weights);
+        rcb_1d(r, &range, 0, tidcount - 1, weights, 0);
     else if (dims == 2)
-        rcb_2d(r, &range, 0, tidcount - 1, weights);
+        rcb_2d(r, &range, 0, tidcount - 1, weights, 0);
     else /* if (dims == 3) */
-        rcb_3d(r, &range, 0, tidcount - 1, weights);
+        rcb_3d(r, &range, 0, tidcount - 1, weights, 0);
+
+    laik_svg_profiler_exit(inst, __func__);
+}
+
+void runIncrementalRCBPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams *p)
+{
+    Laik_Instance *inst = p->space->inst;
+    laik_svg_profiler_enter(inst, __func__);
+
+    int tidcount = p->group->size;
+    int dims = p->space->dims;
+    double *weights = (double *)p->partitioner->data;
+
+    Laik_Space *s = p->space;
+    Laik_Range range = s->range;
+reset:
+    // correction step
+    if (!sbl_parents)
+    {
+        laik_log(1, "lb/rcb_incr: sbl_parents null, using normal rcb\n");
+
+        if (dims == 1)
+            rcb_1d(r, &range, 0, tidcount - 1, weights, 0);
+        else if (dims == 2)
+            rcb_2d(r, &range, 0, tidcount - 1, weights, 0);
+        else /* if (dims == 3) */
+            rcb_3d(r, &range, 0, tidcount - 1, weights, 0);
+
+        sbl_recompute = false; // don't recompute, we should have second-bottom-level parent nodes now...
+    }
+    // otherwise, only move bottom-most boundaries
+    else
+    {
+        laik_log(1, "lb/rcb_incr: sbl_parents found, using incremental rcb\n");
+        LB_RCB_SBL *current = sbl_parents;
+        while (current)
+        {
+            if (dims == 1)
+                rcb_1d(r, &(current->range), current->from, current->to, weights, 0);
+            else if (dims == 2)
+                rcb_2d(r, &(current->range), current->from, current->to, weights, 0);
+            else /* if (dims == 3) */
+                rcb_3d(r, &(current->range), current->from, current->to, weights, 0);
+            current = current->next;
+        }
+
+        // if we move too few bytes, do a global correction step
+        uint64_t diff = laik_rangelist_diff_bytes(laik_partitioning_allranges(p->other), r->list);
+        double reldiff = (double)diff / (double)laik_space_size(s);
+        if (reldiff < 0.02 /* this should be configurable */)
+        {
+            laik_log(1, "lb/rcb_incr: reldiff too small - doing global redo: total: %ld, diff: %ld, rel: %f\n", laik_space_size(s), diff, reldiff);
+            rcb_sl_clear();
+            sbl_recompute = true;
+            r->list->count = 0;
+            goto reset;
+        }
+    }
 
     laik_svg_profiler_exit(inst, __func__);
 }
@@ -1671,6 +1851,11 @@ void runRCBPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams *p)
 Laik_Partitioner *laik_new_rcb_partitioner(double *weights)
 {
     return laik_new_partitioner("rcb", runRCBPartitioner, (void *)weights, 0);
+}
+
+Laik_Partitioner *laik_new_incr_rcb_partitioner(double *weights)
+{
+    return laik_new_partitioner("rcb_incr", runIncrementalRCBPartitioner, (void *)weights, 0);
 }
 
 ////////////////////
@@ -2055,6 +2240,9 @@ Laik_Partitioning *laik_lb_balance(Laik_LBState state, Laik_Partitioning *partit
     {
     case LB_RCB:
         nparter = laik_new_rcb_partitioner(weights);
+        break;
+    case LB_RCB_INCR:
+        nparter = laik_new_incr_rcb_partitioner(weights);
         break;
     case LB_HILBERT:
     case LB_GILBERT:

@@ -1,10 +1,9 @@
 /**
  * Types and function signatures for the load balancing extension.
- * 
+ *
  * No copyright notice for now I suppose.
  */
 
- 
 #ifndef LAIK_LB_H
 #define LAIK_LB_H
 
@@ -14,7 +13,8 @@
 // enum defining current load balancing state (before / after iteration)
 // start: record starting time and return
 // stop : calculate time difference (for weights) and create new partitioning
-typedef enum {
+typedef enum
+{
     START_LB_SEGMENT,
     STOP_LB_SEGMENT,
     PAUSE_LB_SEGMENT,
@@ -22,8 +22,10 @@ typedef enum {
 } Laik_LBState;
 
 // enum defining currently available load balancing algorithms
-typedef enum {
+typedef enum
+{
     LB_RCB,
+    LB_RCB_INCR,
     LB_HILBERT,
     LB_GILBERT
 } Laik_LBAlgorithm;
@@ -51,8 +53,14 @@ Laik_Partitioner *laik_new_sfc_partitioner(double *weights, Laik_LBAlgorithm alg
 // main rcb function
 void runRCBPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams *p);
 
+// main incremental rcb function
+void runIncrementalRCBPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams *p);
+
 // create new rcb partitioner
 Laik_Partitioner *laik_new_rcb_partitioner(double *weights);
+
+// create new incremental rcb partitioner
+Laik_Partitioner *laik_new_incr_rcb_partitioner(double *weights);
 
 ////////////////////
 // load balancing //

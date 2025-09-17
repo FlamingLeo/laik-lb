@@ -15,13 +15,16 @@
 ////////////////////////
 
 // 1d example
-int main_1d(int argc, char *argv[], int64_t spsize, int lcount, bool do_visualization)
+int main_1d(int argc, char *argv[], int64_t spsize, int lcount, Laik_LBAlgorithm lbalg, bool do_visualization)
 {
     // initialize 1d index space of size spsize, each task getting the same slice size
+    if(lbalg != LB_RCB && lbalg != LB_RCB_INCR) {
+        fprintf(stderr, "cannot use sfc load balancing algorithm for 1d example!\n");
+        exit(EXIT_FAILURE);
+    }
     Laik_Instance *inst = laik_init(&argc, &argv);
     Laik_Group *world = laik_world(inst);
     int id = laik_myid(world);
-    Laik_LBAlgorithm lbalg = LB_RCB; // sfc incompatible
 
     laik_lbvis_enable_trace(id, inst);
     laik_svg_profiler_enter(inst, __func__);
@@ -259,7 +262,7 @@ int main(int argc, char *argv[])
     {
         if (sidelen == 0)
             sidelen = 1048576;
-        main_1d(argc, argv, sidelen, lcount /*, rcb obligatory*/, do_visualization);
+        main_1d(argc, argv, sidelen, lcount, algo ? laik_strtolb(algo) : LB_RCB, do_visualization);
     }
     else if (example == 2)
     {
