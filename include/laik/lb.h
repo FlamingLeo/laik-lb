@@ -57,7 +57,7 @@ void runIncrementalRCBPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams 
 Laik_Partitioner *laik_new_rcb_partitioner(double *weights);
 
 // create new incremental rcb partitioner
-Laik_Partitioner *laik_new_incr_rcb_partitioner(double *weights, double imbaldiff);
+Laik_Partitioner *laik_new_incr_rcb_partitioner(double *weights);
 
 ////////////////////
 // load balancing //
