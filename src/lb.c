@@ -1687,15 +1687,11 @@ void runIncrementalRCBPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams 
     // for the first run or some insignificant difference between the current and last rel. imbalances, do global rcb as correction step
     if (isnan(imbaldiff) || imbaldiff < t_imbal)
     {
-        if (laik_myid(p->group) == 0)
-        {
-            printf("diff too small...\n");
-        }
         laik_log(1, "lb/rcb_incr: diff %f < %f, doing global rcb\n", imbaldiff, t_imbal);
         rcb_sl_clear();
         sbl_recompute = true;
     }
-
+reset:
     // correction step
     if (!sbl_parents)
     {
@@ -1725,12 +1721,18 @@ void runIncrementalRCBPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams 
                 rcb_3d(r, &(current->range), current->from, current->to, weights, 0);
             current = current->next;
         }
-    }
 
-    if (!laik_myid(p->group))
-    {
+        // if we move too few bytes, do a global correction step
         uint64_t diff = laik_rangelist_diff_bytes(laik_partitioning_allranges(p->other), r->list);
-        printf("total: %ld, diff: %ld, rel: %f\n", laik_space_size(s), diff, (double)diff / (double)laik_space_size(s));
+        double reldiff = (double)diff / (double)laik_space_size(s);
+        if (reldiff < 0.02)
+        {
+            laik_log(1, "lb/rcb_incr: RELDIFF TOO SMALL, GLOBAL REDO: total: %ld, diff: %ld, rel: %f\n", laik_space_size(s), diff, reldiff);
+            rcb_sl_clear();
+            sbl_recompute = true;
+            r->list->count = 0;
+            goto reset;
+        }
     }
 
     laik_svg_profiler_exit(inst, __func__);
