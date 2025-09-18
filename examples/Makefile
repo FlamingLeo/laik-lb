@@ -93,13 +93,13 @@ clean:
 	rm -f *.o *~ *.ppm $(EXAMPLES)
 
 md2d_omp_simple: omp/md2d_omp_simple.c $(LAIKLIB)
-	$(CC) $(CFLAGS) $(OMP_FLAGS) $< $(LAIKLIB) -o $@
+	$(CC) $(CFLAGS) $(OMP_FLAGS) $< $(LAIKLIB) -o $@ -lm
 
 md2d_omp_task: omp/md2d_omp_task.c $(LAIKLIB)
-	$(CC) $(CFLAGS) $(OMP_FLAGS) $< $(LAIKLIB) -o $@
+	$(CC) $(CFLAGS) $(OMP_FLAGS) $< $(LAIKLIB) -o $@ -lm
 
 md3d_omp_simple: omp/md3d_omp_simple.c $(LAIKLIB)
-	$(CC) $(CFLAGS) $(OMP_FLAGS) $< $(LAIKLIB) -o $@
+	$(CC) $(CFLAGS) $(OMP_FLAGS) $< $(LAIKLIB) -o $@ -lm
 
 md3d_omp_task: omp/md3d_omp_task.c $(LAIKLIB)
-	$(CC) $(CFLAGS) $(OMP_FLAGS) $< $(LAIKLIB) -o $@
+	$(CC) $(CFLAGS) $(OMP_FLAGS) $< $(LAIKLIB) -o $@ -lm

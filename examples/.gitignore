@@ -33,6 +33,10 @@ md
 md-lb
 md3d
 md3d-lb
+md2d_omp_simple
+md2d_omp_task
+md3d_omp_simple
+md3d_omp_task
 md-ser
 md3d-ser
 propagation1d
