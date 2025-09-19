@@ -17,7 +17,7 @@
 // use the defines the user requested
 // simulation parameters
 #define START_TIME 0.0
-#define END_TIME 1.0 // def: 1.0 (5 might be too long)
+#define END_TIME 0.5
 #define DT 0.0005
 
 #define DOMAIN_X 256.0
