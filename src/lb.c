@@ -144,6 +144,12 @@ static inline int log2_int(uint64_t value)
     return log2_tab[((uint64_t)((value - (value >> 1)) * 0x07EDD5E59A4E28C2)) >> 58];
 }
 
+// 1d index for 2d array mapped to 1d
+static inline int64_t idx2d(int64_t x, int64_t y, int64_t width) { return y * width + x; }
+
+// 1d index for 3d array mapped to 1d
+static inline int64_t idx3d_local(int64_t x, int64_t y, int64_t z, int64_t width, int64_t height) { return (z * height + y) * width + x; }
+
 // difference in numbere of elements between two rangelists (how many indices differ in task ids between two rangelists?)
 uint64_t laik_rangelist_diff_bytes(const Laik_RangeList *rl_from, const Laik_RangeList *rl_to)
 {
@@ -397,62 +403,60 @@ static double get_idx_weight_3d(double *weights, int64_t size_x, int64_t size_y,
 // done
 //
 // there's probably better ways of doing this, especially for hilbert curves (quadtrees), but this should be versatile enough to work with various algorithms
-// TODO (lo): preprocessing to avoid multiple grid scans
 
 // merge rectangles (2d)
-static void merge_rects_then_add_ranges(int *grid1D, int64_t width, int64_t height, Laik_RangeReceiver *r, int tidcount)
+void merge_rects_then_add_ranges(int *grid1D, int64_t width, int64_t height, Laik_RangeReceiver *r, int tidcount)
 {
     Laik_Instance *inst = r->list->space->inst;
     laik_svg_profiler_enter(inst, __func__);
 
-    for (int tid = 0; tid < tidcount; ++tid)
+    for (int64_t y = 0; y < height; ++y)
     {
-        // keep carving until no more cells are found for this task
-        for (;;)
+        for (int64_t x = 0; x < width; ++x)
         {
-            bool found = false;
-            int64_t x0 = 0, y0 = 0;
+            int64_t base = idx2d(x, y, width);
+            int tid = grid1D[base];
 
-            // find bottom‑leftmost cell == tid
-            for (int64_t y = 0; y < height && !found; ++y)
-            {
-                for (int64_t x = 0; x < width; ++x)
-                {
-                    if (grid1D[IDX2D(x, y)] == tid)
-                    {
-                        x0 = x;
-                        y0 = y;
-                        found = true;
-                        break;
-                    }
-                }
-            }
+            // skip already-used (-1) and out-of-range tids
+            if (tid < 0 || tid >= tidcount)
+                continue;
 
-            // couldn't find anything for this task?
-            if (!found)
-                break;
+            // anchor at (x0,y0)
+            int64_t x0 = x;
+            int64_t y0 = y;
 
-            // scan right to get initial width
+            // initial horizontal run (bounded by width)
             int64_t w = 0;
-            while (x0 + w < width && grid1D[IDX2D(x0 + w, y0)] == tid)
+            int64_t scan_idx = base;
+            while (x0 + w < width && grid1D[scan_idx + w] == tid)
                 ++w;
 
-            // extend upward to maximize area
+            // grow upward to maximize area
             int64_t best_area = w;
-            int64_t best_w = w; // remember the width at which best_area occurs
+            int64_t best_w = w;
             int64_t best_h = 1;
             int64_t curr_w = w;
 
             for (int64_t h = 2; y0 + h <= height; ++h)
             {
-                // measure run of tids in row y0 + h − 1
+                int64_t yy = y0 + h - 1;
+                int64_t row_idx = idx2d(x0, yy, width);
+
+                // if the row start isn't the same tid, we cannot extend
+                if (grid1D[row_idx] != tid)
+                    break;
+
+                // measure run in this row but cap at curr_w
                 int64_t w_h = 0;
-                while (x0 + w_h < width && grid1D[IDX2D(x0 + w_h, y0 + h - 1)] == tid)
+                while (w_h < curr_w && x0 + w_h < width && grid1D[row_idx + w_h] == tid)
                     ++w_h;
+
                 if (w_h == 0)
                     break;
+
                 if (w_h < curr_w)
                     curr_w = w_h;
+
                 int64_t area = curr_w * h;
                 if (area > best_area)
                 {
@@ -462,13 +466,24 @@ static void merge_rects_then_add_ranges(int *grid1D, int64_t width, int64_t heig
                 }
             }
 
-            // record the rectangle using best_w and best_h
-            laik_append_range(r, tid, &(Laik_Range){.space = r->list->space, .from = {{x0, y0, 0}}, .to = {{x0 + best_w, y0 + best_h, 0}}}, 0, 0);
+            // append the chosen rectangle
+            Laik_Range range = {
+                .space = r->list->space,
+                .from = {{x0, y0, 0}},
+                .to = {{x0 + best_w, y0 + best_h, 0}}};
+            laik_append_range(r, tid, &range, 0, 0);
 
-            // mark covered cells “used” by setting them to -1
+            // mark covered cells used (-1)
             for (int64_t dy = 0; dy < best_h; ++dy)
+            {
+                int64_t row_base = idx2d(x0, y0 + dy, width);
                 for (int64_t dx = 0; dx < best_w; ++dx)
-                    grid1D[IDX2D(x0 + dx, y0 + dy)] = -1;
+                    grid1D[row_base + dx] = -1;
+            }
+
+            // advance x to skip cells we've just covered (now -1)
+            // subtract 1 because the for loop will increment x
+            x = x0 + best_w - 1;
         }
     }
 
@@ -481,132 +496,172 @@ static void merge_cuboids_then_add_ranges(int *grid1D, int64_t width, int64_t he
     Laik_Instance *inst = r->list->space->inst;
     laik_svg_profiler_enter(inst, __func__);
 
-    for (int tid = 0; tid < tidcount; ++tid)
-    {
-        for (;;)
-        {
-            bool found = false;
-            int64_t x0 = 0, y0 = 0, z0 = 0;
+    // temporary buffers reused across anchors
+    int64_t *w_layer = NULL; // stores curr_w per (dz, hh-1): size rem_d * rem_h
+    int64_t *min_w_h = NULL; // running minima across layers for each height hh
+    size_t buf_capacity = 0; // capacity in elements
 
-            // find bottom-front-leftmost smallest cell == tid
-            for (int64_t z = 0; z < depth && !found; ++z)
+    for (int64_t z = 0; z < depth; ++z)
+    {
+        for (int64_t y = 0; y < height; ++y)
+        {
+            for (int64_t x = 0; x < width; ++x)
             {
-                for (int64_t y = 0; y < height && !found; ++y)
+                int64_t base = idx3d_local(x, y, z, width, height);
+                int tid = grid1D[base];
+
+                // skip already-used (-1) and out-of-range tids
+                if (tid < 0 || tid >= tidcount)
+                    continue;
+
+                // anchor at (x,y,z)
+                int64_t x0 = x, y0 = y, z0 = z;
+
+                // remaining extents from anchor
+                int64_t rem_h = height - y0;
+                int64_t rem_d = depth - z0;
+                if (rem_h <= 0 || rem_d <= 0)
                 {
-                    for (int64_t x = 0; x < width; ++x)
+                    // should not happen!
+                    grid1D[base] = -1;
+                    continue;
+                }
+
+                size_t need = (size_t)rem_d * (size_t)rem_h;
+                if (need > buf_capacity)
+                {
+                    // allocate at least depth*height to amortize allocations
+                    size_t new_cap = (size_t)depth * (size_t)height;
+                    if (new_cap < need)
+                        new_cap = need;
+                    int64_t *tmp = (int64_t *)realloc(w_layer, new_cap * sizeof(int64_t));
+                    if (!tmp)
                     {
-                        if (grid1D[IDX3D(x, y, z)] == tid)
+                        // allocation fails, fallback
+                        goto fallback_single_cell;
+                    }
+                    w_layer = tmp;
+                    int64_t *tmp2 = (int64_t *)realloc(min_w_h, new_cap * sizeof(int64_t));
+                    if (!tmp2)
+                    {
+                        // allocation fails, fallback
+                        free(w_layer);
+                        w_layer = NULL;
+                        goto fallback_single_cell;
+                    }
+                    min_w_h = tmp2;
+                    buf_capacity = new_cap;
+                }
+
+                // build w_layer
+                // for each dz (depth layer), and each hh (height from anchor), store the minimum contiguous run length in x (from x0) across rows up to hh
+                for (int64_t dz = 0; dz < rem_d; ++dz)
+                {
+                    int64_t zcur = z0 + dz;
+                    int64_t curr_w = INT64_MAX;
+                    size_t base_offset = (size_t)dz * (size_t)rem_h;
+                    for (int64_t hh = 1; hh <= rem_h; ++hh)
+                    {
+                        int64_t ycur = y0 + (hh - 1);
+                        int64_t run = 0;
+                        int64_t row_idx = idx3d_local(x0, ycur, zcur, width, height);
+
+                        // cap scanning by curr_w and by bounds
+                        while (run < curr_w && x0 + run < width && grid1D[row_idx + run] == tid)
+                            ++run;
+
+                        if (hh == 1)
+                            curr_w = run;
+                        else if (run < curr_w)
+                            curr_w = run;
+
+                        w_layer[base_offset + (hh - 1)] = curr_w;
+
+                        if (curr_w == 0)
                         {
-                            x0 = x;
-                            y0 = y;
-                            z0 = z;
-                            found = true;
+                            // remaining hh for this dz will be zero
+                            for (int64_t hh2 = hh + 1; hh2 <= rem_h; ++hh2)
+                                w_layer[base_offset + (hh2 - 1)] = 0;
                             break;
                         }
                     }
                 }
-            }
 
-            // couldn't find anything for this task?
-            if (!found)
-                break;
+                // search for best (w,h,d) maximizing volume efficiently:
+                //   iterate d from 1 to rem_d, keep min_w_h[hh-1] = min across layers seen so far
+                //   for each d compute the best h using the min_w_h array
+                int64_t best_vol = 0;
+                int64_t best_w = 0, best_h = 0, best_d = 0;
 
-            // dimensions remaining from the anchor
-            int64_t rem_h = height - y0;
-            int64_t rem_d = depth - z0;
+                // initialize min_w_h with INF (set from first layer)
+                for (int64_t hh = 0; hh < rem_h; ++hh)
+                    min_w_h[hh] = INT64_MAX;
 
-            // precompute minimal run length
-            int64_t *w_layer = (int64_t *)safe_malloc(sizeof(int64_t) * rem_d * rem_h);
-
-            for (int64_t dz = 0; dz < rem_d; ++dz)
-            {
-                int64_t z = z0 + dz;
-                int64_t curr_w = INT64_MAX;
-                for (int64_t hh = 1; hh <= rem_h; ++hh)
+                for (int64_t dcur = 1; dcur <= rem_d; ++dcur)
                 {
-                    int64_t y = y0 + (hh - 1);
-
-                    // compute run length in x at (x0, y, z)
-                    int64_t run = 0;
-                    while (x0 + run < width &&
-                           grid1D[IDX3D(x0 + run, y, z)] == tid)
-                        ++run;
-
-                    if (hh == 1)
-                        curr_w = run;
-                    else if (run < curr_w)
-                        curr_w = run;
-
-                    // store curr_w (may be 0)
-                    w_layer[dz * rem_h + (hh - 1)] = curr_w;
-
-                    // early stop for this layer if curr_w == 0: further hh will be zero too
-                    if (curr_w == 0)
+                    size_t layer_off = (size_t)(dcur - 1) * (size_t)rem_h;
+                    // update running minima for each height
+                    for (int64_t hh = 1; hh <= rem_h; ++hh)
                     {
-                        // fill remaining hh for this layer with 0 if any
-                        for (int64_t hh2 = hh + 1; hh2 <= rem_h; ++hh2)
-                            w_layer[dz * rem_h + (hh2 - 1)] = 0;
-                        break;
+                        int64_t w_for_layer = w_layer[layer_off + (hh - 1)];
+                        if (dcur == 1)
+                            min_w_h[hh - 1] = w_for_layer;
+                        else if (w_for_layer < min_w_h[hh - 1])
+                            min_w_h[hh - 1] = w_for_layer;
+                    }
+
+                    // now find best h for this dcur
+                    for (int64_t hh = 1; hh <= rem_h; ++hh)
+                    {
+                        int64_t mw = min_w_h[hh - 1];
+                        if (mw == 0)
+                            continue;
+                        int64_t vol = mw * hh * dcur;
+                        if (vol > best_vol)
+                        {
+                            best_vol = vol;
+                            best_w = mw;
+                            best_h = hh;
+                            best_d = dcur;
+                        }
                     }
                 }
-            }
 
-            // search for (w,h,d) maximizing volume
-            int64_t best_vol = 0;
-            int64_t best_w = 0, best_h = 0, best_d = 0;
-
-            for (int64_t d = 1; d <= rem_d; ++d)
-            {
-                for (int64_t h = 1; h <= rem_h; ++h)
+                // fallback to single cell if something went wrong
+                if (best_vol == 0)
                 {
-                    int64_t min_w = INT64_MAX;
-                    for (int64_t dz = 0; dz < d; ++dz)
+                fallback_single_cell:
+                    best_w = 1;
+                    best_h = 1;
+                    best_d = 1;
+                }
+
+                // append the chosen cuboid
+                Laik_Range range = {
+                    .space = r->list->space,
+                    .from = {{x0, y0, z0}},
+                    .to = {{x0 + best_w, y0 + best_h, z0 + best_d}}};
+                laik_append_range(r, tid, &range, 0, 0);
+
+                // mark covered cells used (-1)
+                for (int64_t dz = 0; dz < best_d; ++dz)
+                {
+                    for (int64_t dy = 0; dy < best_h; ++dy)
                     {
-                        int64_t w_for_layer = w_layer[dz * rem_h + (h - 1)];
-                        if (w_for_layer < min_w)
-                            min_w = w_for_layer;
-                        if (min_w == 0)
-                            break;
-                    }
-                    if (min_w == 0)
-                        continue;
-                    int64_t vol = min_w * h * d;
-                    if (vol > best_vol)
-                    {
-                        best_vol = vol;
-                        best_w = min_w;
-                        best_h = h;
-                        best_d = d;
+                        int64_t row_base = idx3d_local(x0, y0 + dy, z0 + dz, width, height);
+                        for (int64_t dx = 0; dx < best_w; ++dx)
+                            grid1D[row_base + dx] = -1;
                     }
                 }
+
+                // advance x to skip the region we just covered
+                x = x0 + best_w - 1;
             }
-
-            free(w_layer);
-
-            // best_vol must be > 0 because at least the anchor cell exists
-            // fallback: take the single anchor cell
-            if (best_vol == 0)
-            {
-                best_w = 1;
-                best_h = 1;
-                best_d = 1;
-            }
-
-            // record the cuboid using best_w, best_h, best_d
-            laik_append_range(r, tid, &(Laik_Range){.space = r->list->space, .from = {{x0, y0, z0}}, .to = {{
-                                                                                                         x0 + best_w,
-                                                                                                         y0 + best_h,
-                                                                                                         z0 + best_d,
-                                                                                                     }}},
-                              0, 0);
-
-            // mark covered cells used (set to -1)
-            for (int64_t dz = 0; dz < best_d; ++dz)
-                for (int64_t dy = 0; dy < best_h; ++dy)
-                    for (int64_t dx = 0; dx < best_w; ++dx)
-                        grid1D[IDX3D(x0 + dx, y0 + dy, z0 + dz)] = -1;
         }
     }
+
+    free(w_layer);
+    free(min_w_h);
 
     laik_svg_profiler_exit(inst, __func__);
 }
