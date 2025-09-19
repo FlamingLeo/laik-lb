@@ -17,12 +17,12 @@
 // use the defines the user requested
 // simulation parameters
 #define START_TIME 0.0
-#define END_TIME 0.5
+#define END_TIME 1.5
 #define DT 0.0005
 
-#define DOMAIN_X 256.0
-#define DOMAIN_Y 256.0
-#define DOMAIN_Z 256.0
+#define DOMAIN_X 128.0
+#define DOMAIN_Y 128.0
+#define DOMAIN_Z 128.0
 
 #define CUTOFF 4.0
 #define CUTOFF2 ((CUTOFF) * (CUTOFF))
@@ -41,21 +41,21 @@
 
 // cuboid A, stationary, large, bottom
 #define A_POS_X 20.0
-#define A_POS_Y 70.0
+#define A_POS_Y 20.0
 #define A_POS_Z 10.0
-#define A_SIZE_X 200
-#define A_SIZE_Y 50
+#define A_SIZE_X 70
+#define A_SIZE_Y 20
 #define A_SIZE_Z 10
 #define A_VX 0.0
 #define A_VY 0.0
 #define A_VZ 0.0
 
 // cuboid B, moving towards cuboid A, smaller, top
-#define B_POS_X 105.0
-#define B_POS_Y 150.0
+#define B_POS_X 50.0
+#define B_POS_Y 60.0
 #define B_POS_Z 10.0
-#define B_SIZE_X 50
-#define B_SIZE_Y 50
+#define B_SIZE_X 20
+#define B_SIZE_Y 20
 #define B_SIZE_Z 10
 #define B_VX 0.0
 #define B_VY -10.0
