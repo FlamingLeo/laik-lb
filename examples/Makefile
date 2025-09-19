@@ -5,7 +5,8 @@ ASANCOPT = -fsanitize=address -fno-omit-frame-pointer
 ASANLDOPT = -fsanitize=address -Wl,-Bdynamic -lasan
 
 # default settings
-OPT=-g #$(ASANCOPT)
+OPT=-O3
+# OPT=-g #$(ASANCOPT)
 
 # settings from 'configure', may overwrite defaults
 -include ../Makefile.config
