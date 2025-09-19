@@ -19,10 +19,10 @@
 #define DT 0.0005
 #define HALF_DT2 (0.5 * (DT) * (DT))
 
-#define DOMAIN_X 180.0
-#define DOMAIN_Y 90.0
+#define DOMAIN_X 256.0
+#define DOMAIN_Y 256.0
 
-#define CUTOFF 3.0
+#define CUTOFF 4.0
 
 // lennard-jones parameters, same for every particle here for simplicity
 #define MASS 1.0
@@ -34,17 +34,17 @@
 
 // cuboid A, stationary, large, bottom
 #define A_POS_X 20.0
-#define A_POS_Y 20.0
-#define A_SIZE_X 100
-#define A_SIZE_Y 20
+#define A_POS_Y 70.0
+#define A_SIZE_X 200
+#define A_SIZE_Y 50
 #define A_VX 0.0
 #define A_VY 0.0
 
 // cuboid B, moving towards cuboid A, smaller, top
-#define B_POS_X 70.0
-#define B_POS_Y 60.0
-#define B_SIZE_X 20
-#define B_SIZE_Y 20
+#define B_POS_X 105.0
+#define B_POS_Y 150.0
+#define B_SIZE_X 50
+#define B_SIZE_Y 50
 #define B_VX 0.0
 #define B_VY -10.0
 
