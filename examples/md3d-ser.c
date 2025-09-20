@@ -14,7 +14,7 @@
 
 // simulation parameters
 #define START_TIME 0.0
-#define END_TIME 1.5
+#define END_TIME 1.0
 #define DT 0.0005
 
 #define DOMAIN_X 128.0

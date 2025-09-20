@@ -15,7 +15,7 @@
 
 // simulation parameters
 #define START_TIME 0.0
-#define END_TIME 1.5
+#define END_TIME 1.0
 #define DT 0.0005
 
 #define DOMAIN_X 128.0
@@ -64,6 +64,12 @@ int *next; // length: npart
 // linked cell structure
 int ncell_x, ncell_y, ncell_z, ncell;
 int *head; // length: ncell
+
+// thread buffers
+double *ax_thread = NULL;
+double *ay_thread = NULL;
+double *az_thread = NULL;
+int nthreads_for_alloc = 0;
 
 // lj constants
 double sigma6, sigma12;
@@ -221,11 +227,26 @@ static inline void build_cell_list()
 static inline double compute_forces_cells()
 {
     double potential = 0.0;
+    int nt = nthreads_for_alloc ? nthreads_for_alloc : 1;
 
-// parallel over cells, reduction on potential
+    // zero per-thread accumulators (parallel)
+#pragma omp parallel for schedule(static)
+    for (size_t ii = 0; ii < (size_t)nt * (size_t)npart; ++ii)
+    {
+        ax_thread[ii] = 0.0;
+        ay_thread[ii] = 0.0;
+        az_thread[ii] = 0.0;
+    }
+
+    // parallel over outer-most index
 #pragma omp parallel for reduction(+ : potential) schedule(dynamic)
     for (int cz = 0; cz < ncell_z; ++cz)
     {
+        int tid = omp_get_thread_num();
+        double *ax_t = ax_thread + (size_t)tid * (size_t)npart;
+        double *ay_t = ay_thread + (size_t)tid * (size_t)npart;
+        double *az_t = az_thread + (size_t)tid * (size_t)npart;
+
         for (int cy = 0; cy < ncell_y; ++cy)
         {
             for (int cx = 0; cx < ncell_x; ++cx)
@@ -248,11 +269,13 @@ static inline double compute_forces_cells()
                                 int nx = cx + dxc;
                                 if (nx < 0 || nx >= ncell_x)
                                     continue;
+
                                 int nc = nx + ny * ncell_x + nz * (ncell_x * ncell_y);
                                 for (int q = head[nc]; q != -1; q = next[q])
                                 {
                                     if (q <= p)
                                         continue; // avoid double counting
+
                                     double dx = x[p] - x[q];
                                     double dy = y[p] - y[q];
                                     double dz = z[p] - z[q];
@@ -275,30 +298,41 @@ static inline double compute_forces_cells()
                                         double fy_m = fy / MASS;
                                         double fz_m = fz / MASS;
 
-#pragma omp atomic
-                                        ax[p] += fx_m;
-#pragma omp atomic
-                                        ay[p] += fy_m;
-#pragma omp atomic
-                                        az[p] += fz_m;
+                                        // accumulate to thread-local buffers
+                                        ax_t[p] += fx_m;
+                                        ay_t[p] += fy_m;
+                                        az_t[p] += fz_m;
 
-#pragma omp atomic
-                                        ax[q] -= fx_m;
-#pragma omp atomic
-                                        ay[q] -= fy_m;
-#pragma omp atomic
-                                        az[q] -= fz_m;
+                                        ax_t[q] -= fx_m;
+                                        ay_t[q] -= fy_m;
+                                        az_t[q] -= fz_m;
 
-                                        double vp = 4.0 * EPSILON * (sor12 - sor6);
-                                        potential += vp;
+                                        potential += 4.0 * EPSILON * (sor12 - sor6);
                                     }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+                                } // q
+                            } // dxc
+                        } // dyc
+                    } // dzc
+                } // p
+            } // cx
+        } // cy
+    } // cz
+
+    // reduce per-thread accumulators into globals
+#pragma omp parallel for schedule(static)
+    for (int i = 0; i < npart; ++i)
+    {
+        double sx = 0.0, sy = 0.0, sz = 0.0;
+        for (int t = 0; t < nt; ++t)
+        {
+            size_t base = (size_t)t * (size_t)npart + (size_t)i;
+            sx += ax_thread[base];
+            sy += ay_thread[base];
+            sz += az_thread[base];
         }
+        ax[i] += sx;
+        ay[i] += sy;
+        az[i] += sz;
     }
 
     return potential;
@@ -371,6 +405,20 @@ int main(int argc, char **argv)
     printf("npart = %d\n", npart);
     printf("Cells: %d x %d x %d = %d\n", ncell_x, ncell_y, ncell_z, ncell);
 
+    // initialize thread buffers
+    nthreads_for_alloc = omp_get_max_threads();
+    if (nthreads_for_alloc < 1)
+        nthreads_for_alloc = 1;
+
+    size_t tot_elems = (size_t)nthreads_for_alloc * (size_t)npart;
+    ax_thread = (double *)safe_malloc(sizeof(double) * tot_elems);
+    ay_thread = (double *)safe_malloc(sizeof(double) * tot_elems);
+    az_thread = (double *)safe_malloc(sizeof(double) * tot_elems);
+
+    for (size_t i = 0; i < tot_elems; ++i)
+        ax_thread[i] = ay_thread[i] = az_thread[i] = 0.0;
+
+    // potential
     double pot = 0.0;
 
     long nsteps = (long)((END_TIME - START_TIME) / DT + 0.5);
@@ -455,6 +503,9 @@ int main(int argc, char **argv)
     free(az_old);
     free(next);
     free(head);
+    free(ax_thread);
+    free(ay_thread);
+    free(az_thread);
 
     return 0;
 }

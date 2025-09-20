@@ -59,6 +59,12 @@ int *next; // next[p] = index of the next particle after p in the same cell or -
 int ncell_x, ncell_y, ncell;
 int *head; // head[cell] = index of first particle in that cell or -1; length: ncell
 
+// thread buffers
+double *ax_thread = NULL;
+double *ay_thread = NULL;
+int nthreads_for_alloc = 0;
+int grainsize_mult = 4;
+
 // precomputed lj constants
 double sigma6;
 double cutoff2;
@@ -195,92 +201,113 @@ static inline void build_cell_list()
 static inline double compute_forces_cells()
 {
     double potential = 0.0;
+    int nt = nthreads_for_alloc ? nthreads_for_alloc : 1;
 
-// parallel region for tasking
+    // zero per-thread accumulators (parallel)
+#pragma omp parallel for schedule(static)
+    for (size_t ii = 0; ii < (size_t)nt * npart; ++ii)
+    {
+        ax_thread[ii] = 0.0;
+        ay_thread[ii] = 0.0;
+    }
+
+    // grainsize for taskloop
+    int grainsize = ncell / (nt * grainsize_mult);
+    if (grainsize < 1)
+        grainsize = 1;
+
+    // let each task process a contiguous subset of cells
 #pragma omp parallel
     {
 #pragma omp single nowait
         {
-            for (int c = 0; c < ncell; ++c)
+#pragma omp taskloop grainsize(grainsize)
+            for (int cc = 0; cc < ncell; ++cc)
             {
-                int cc = c; // capture
-#pragma omp task firstprivate(cc)
+                double pot_local = 0.0;
+                int tid = omp_get_thread_num();
+                double *ax_t = ax_thread + (size_t)tid * npart;
+                double *ay_t = ay_thread + (size_t)tid * npart;
+
+                int cx = cc % ncell_x;
+                int cy = cc / ncell_x;
+
+                for (int p = head[cc]; p != -1; p = next[p])
                 {
-                    double pot_local = 0.0;
-                    int cx = cc % ncell_x;
-                    int cy = cc / ncell_x;
-
-                    // iterate particles in cell cc
-                    for (int p = head[cc]; p != -1; p = next[p])
+                    for (int dyc = -1; dyc <= 1; ++dyc)
                     {
-                        // neighbor cells (including own)
-                        for (int dyc = -1; dyc <= 1; ++dyc)
+                        int ny = cy + dyc;
+                        if (ny < 0 || ny >= ncell_y)
+                            continue;
+                        for (int dxc = -1; dxc <= 1; ++dxc)
                         {
-                            int ny = cy + dyc;
-                            if (ny < 0 || ny >= ncell_y)
+                            int nx = cx + dxc;
+                            if (nx < 0 || nx >= ncell_x)
                                 continue;
-                            for (int dxc = -1; dxc <= 1; ++dxc)
+                            int nc = nx + ny * ncell_x;
+
+                            for (int q = head[nc]; q != -1; q = next[q])
                             {
-                                int nx = cx + dxc;
-                                if (nx < 0 || nx >= ncell_x)
+                                if (q <= p)
                                     continue;
-                                int nc = nx + ny * ncell_x;
 
-                                // loop over q in neighbor cell
-                                for (int q = head[nc]; q != -1; q = next[q])
+                                double dx = x[p] - x[q];
+                                double dy = y[p] - y[q];
+                                double r2 = dx * dx + dy * dy;
+                                if (r2 <= 1e-12)
+                                    continue;
+                                if (r2 <= cutoff2)
                                 {
-                                    if (q <= p)
-                                        continue; // N3L avoidance
+                                    double invr2 = 1.0 / r2;
+                                    double invr6 = invr2 * invr2 * invr2;
+                                    double sor6 = sigma6 * invr6;
+                                    double sor12 = sor6 * sor6;
 
-                                    double dx = x[p] - x[q];
-                                    double dy = y[p] - y[q];
-                                    double r2 = dx * dx + dy * dy;
-                                    if (r2 <= 1e-12)
-                                        continue;
-                                    if (r2 <= cutoff2)
-                                    {
-                                        double invr2 = 1.0 / r2;
-                                        double invr6 = invr2 * invr2 * invr2;
-                                        double sor6 = sigma6 * invr6;
-                                        double sor12 = sor6 * sor6;
+                                    double factor = 24.0 * EPSILON * (2.0 * sor12 - sor6) * invr2;
+                                    double fx = factor * dx;
+                                    double fy = factor * dy;
 
-                                        double factor = 24.0 * EPSILON * (2.0 * sor12 - sor6) * invr2;
-                                        double fx = factor * dx;
-                                        double fy = factor * dy;
+                                    double fx_div_m = fx / MASS;
+                                    double fy_div_m = fy / MASS;
 
-                                        double fx_div_m = fx / MASS;
-                                        double fy_div_m = fy / MASS;
+                                    // accumulate into thread-local arrays
+                                    ax_t[p] += fx_div_m;
+                                    ay_t[p] += fy_div_m;
 
-// atomic updates to ax/ay of p and q (p gains +, q gains -)
+                                    ax_t[q] -= fx_div_m;
+                                    ay_t[q] -= fy_div_m;
+
+                                    pot_local += 4.0 * EPSILON * (sor12 - sor6);
+                                }
+                            } // q loop
+                        } // dxc
+                    } // dyc
+                } // p loop
+
+                if (pot_local != 0.0)
+                {
 #pragma omp atomic
-                                        ax[p] += fx_div_m;
-#pragma omp atomic
-                                        ay[p] += fy_div_m;
-
-#pragma omp atomic
-                                        ax[q] -= fx_div_m;
-#pragma omp atomic
-                                        ay[q] -= fy_div_m;
-
-                                        double vp = 4.0 * EPSILON * (sor12 - sor6);
-                                        pot_local += vp;
-                                    }
-                                } // q loop
-                            } // dxc
-                        } // dyc
-                    } // p loop
-
-                    // reduce task-local potential to global potential
-                    if (pot_local != 0.0)
-                    {
-#pragma omp atomic
-                        potential += pot_local;
-                    }
-                } // end task
-            } // end for c
+                    potential += pot_local;
+                }
+            } // taskloop
 #pragma omp taskwait
         } // single
     } // parallel
+
+    // reduce per-thread accumulators into global ax/ay
+#pragma omp parallel for schedule(static)
+    for (int i = 0; i < npart; ++i)
+    {
+        double sumx = 0.0;
+        double sumy = 0.0;
+        for (int t = 0; t < nt; ++t)
+        {
+            sumx += ax_thread[(size_t)t * npart + i];
+            sumy += ay_thread[(size_t)t * npart + i];
+        }
+        ax[i] += sumx;
+        ay[i] += sumy;
+    }
 
     return potential;
 }
@@ -330,11 +357,21 @@ static inline double compute_kinetic()
 
 int main(int argc, char **argv)
 {
-    bool output = !(argc > 1 && !strcmp(argv[1], "-o"));
+    bool output = true;
+    for (int arg = 1; arg < argc; ++arg)
+    {
+        // do general output (disable this for accurate profiling!)
+        if (!strcmp(argv[arg], "-o"))
+            output = false;
+
+        // set grainsize multiplier
+        if (arg + 1 < argc && !strcmp(argv[arg], "-g"))
+            grainsize_mult = atoi(argv[++arg]);
+    }
 
     printf("2D linked-cell Lennard-Jones cuboid collision (OpenMP, task-based)\n");
     printf("domain: %g x %g, cutoff=%g, dt=%g\n", DOMAIN_X, DOMAIN_Y, CUTOFF, DT);
-    printf("max threads: %d, output: %d\n", omp_get_max_threads(), output);
+    printf("max threads: %d, output: %d, grainsize multiplier: %d\n", omp_get_max_threads(), output, grainsize_mult);
 
     // precompute lj constants
     sigma6 = pow(SIGMA, 6);
@@ -346,6 +383,21 @@ int main(int argc, char **argv)
 
     printf("npart = %d\n", npart);
     printf("Cells: %d x %d = %d\n", ncell_x, ncell_y, ncell);
+
+    // initialize thread buffers
+    nthreads_for_alloc = omp_get_max_threads();
+    if (nthreads_for_alloc < 1)
+        nthreads_for_alloc = 1;
+    ax_thread = (double *)safe_malloc(sizeof(double) * (size_t)nthreads_for_alloc * npart);
+    ay_thread = (double *)safe_malloc(sizeof(double) * (size_t)nthreads_for_alloc * npart);
+
+    printf("taskloop grainsize: %d\n", ncell / (nthreads_for_alloc * grainsize_mult));
+
+    for (size_t i = 0; i < (size_t)nthreads_for_alloc * npart; ++i)
+    {
+        ax_thread[i] = 0.0;
+        ay_thread[i] = 0.0;
+    }
 
     // potential
     double pot = 0.0;
@@ -427,6 +479,8 @@ int main(int argc, char **argv)
     free(ay_old);
     free(next);
     free(head);
+    free(ax_thread);
+    free(ay_thread);
 
     return 0;
 }

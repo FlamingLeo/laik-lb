@@ -59,6 +59,11 @@ int *next; // next[p] = index of the next particle after p in the same cell or -
 int ncell_x, ncell_y, ncell;
 int *head; // head[cell] = index of first particle in that cell or -1; length: ncell
 
+// thread buffers
+double *ax_thread = NULL; // size: nthreads * npart
+double *ay_thread = NULL;
+int nthreads_for_alloc = 0;
+
 // precomputed lj constants
 double sigma6;
 double cutoff2;
@@ -195,17 +200,31 @@ static inline void build_cell_list()
 static inline double compute_forces_cells()
 {
     double potential = 0.0;
+    int nt = nthreads_for_alloc;
+    if (nt <= 0)
+        nt = 1;
 
-// parallel over cells (1D index over c) with reduction for potential
+    // zero per-thread accumulators for only used portion
+#pragma omp parallel for schedule(static)
+    for (int t = 0; t < nt * npart; ++t)
+    {
+        ax_thread[t] = 0.0;
+        ay_thread[t] = 0.0;
+    }
+
+    // main force loop
 #pragma omp parallel for reduction(+ : potential) schedule(dynamic)
     for (int c = 0; c < ncell; ++c)
     {
+        int tid = omp_get_thread_num();
+        double *ax_t = ax_thread + ((size_t)tid * npart);
+        double *ay_t = ay_thread + ((size_t)tid * npart);
+
         int cx = c % ncell_x;
         int cy = c / ncell_x;
 
         for (int p = head[c]; p != -1; p = next[p])
         {
-            // neighbor cell loop
             for (int dyc = -1; dyc <= 1; ++dyc)
             {
                 int ny = cy + dyc;
@@ -217,43 +236,36 @@ static inline double compute_forces_cells()
                     if (nx < 0 || nx >= ncell_x)
                         continue;
                     int nc = nx + ny * ncell_x;
-                    // for all particles q in neighbor cell
                     for (int q = head[nc]; q != -1; q = next[q])
                     {
                         if (q <= p)
-                            continue; // avoid double counting
+                            continue;
 
-                        // compute pair vector
                         double dx = x[p] - x[q];
                         double dy = y[p] - y[q];
                         double r2 = dx * dx + dy * dy;
                         if (r2 <= 1e-12)
-                            continue; // safety
+                            continue;
                         if (r2 <= cutoff2)
                         {
                             double invr2 = 1.0 / r2;
-                            double invr6 = invr2 * invr2 * invr2; // (1/r^2)^3 = 1/r^6
-                            double sor6 = sigma6 * invr6;         // (sigma^6)/(r^6)
-                            double sor12 = sor6 * sor6;           // (sigma/r)^12
+                            double invr6 = invr2 * invr2 * invr2;
+                            double sor6 = sigma6 * invr6;
+                            double sor12 = sor6 * sor6;
 
-                            // factor = 24*eps*(2*s12 - s6) * (1/r^2)
                             double factor = 24.0 * EPSILON * (2.0 * sor12 - sor6) * invr2;
                             double fx = factor * dx;
                             double fy = factor * dy;
 
-                            // atomically add to ax[p], ay[p] and to ax[q], ay[q] (opposite sign)
                             double fx_div_m = fx / MASS;
                             double fy_div_m = fy / MASS;
 
-#pragma omp atomic
-                            ax[p] += fx_div_m;
-#pragma omp atomic
-                            ay[p] += fy_div_m;
+                            // write to thread-local accumulators
+                            ax_t[p] += fx_div_m;
+                            ay_t[p] += fy_div_m;
 
-#pragma omp atomic
-                            ax[q] -= fx_div_m;
-#pragma omp atomic
-                            ay[q] -= fy_div_m;
+                            ax_t[q] -= fx_div_m;
+                            ay_t[q] -= fy_div_m;
 
                             double vp = 4.0 * EPSILON * (sor12 - sor6);
                             potential += vp;
@@ -262,6 +274,21 @@ static inline double compute_forces_cells()
                 }
             }
         }
+    }
+
+    // reduce per-thread accumulators into global arrays
+#pragma omp parallel for schedule(static)
+    for (int i = 0; i < npart; ++i)
+    {
+        double sumx = 0.0;
+        double sumy = 0.0;
+        for (int t = 0; t < nt; ++t)
+        {
+            sumx += ax_thread[(size_t)t * npart + i];
+            sumy += ay_thread[(size_t)t * npart + i];
+        }
+        ax[i] += sumx;
+        ay[i] += sumy;
     }
 
     return potential;
@@ -310,7 +337,7 @@ static inline double compute_kinetic()
 // main //
 //////////
 
-int main(int argc, char** argv)
+int main(int argc, char **argv)
 {
     bool output = !(argc > 1 && !strcmp(argv[1], "-o"));
 
@@ -328,6 +355,19 @@ int main(int argc, char** argv)
 
     printf("npart = %d\n", npart);
     printf("Cells: %d x %d = %d\n", ncell_x, ncell_y, ncell);
+
+    // initialize thread buffers
+    nthreads_for_alloc = omp_get_max_threads();
+    if (nthreads_for_alloc < 1)
+        nthreads_for_alloc = 1;
+    ax_thread = (double *)safe_malloc(sizeof(double) * nthreads_for_alloc * npart);
+    ay_thread = (double *)safe_malloc(sizeof(double) * nthreads_for_alloc * npart);
+
+    for (int t = 0; t < nthreads_for_alloc * npart; ++t)
+    {
+        ax_thread[t] = 0.0;
+        ay_thread[t] = 0.0;
+    }
 
     // potential
     double pot = 0.0;
@@ -409,6 +449,8 @@ int main(int argc, char** argv)
     free(ay_old);
     free(next);
     free(head);
+    free(ax_thread);
+    free(ay_thread);
 
     return 0;
 }
