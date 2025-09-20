@@ -237,6 +237,7 @@ int main(int argc, char **argv)
     {
         printf("3D linked-cell Lennard-Jones cuboid collision\n");
         printf("domain: %g x %g x %g, cutoff=%g, dt=%g\n", DOMAIN_X, DOMAIN_Y, DOMAIN_Z, CUTOFF, DT);
+        printf("profiling: %d, visualization: %d, output: %d\n", profiling, do_visualization, output);
     }
 
     // log every _ iterations
