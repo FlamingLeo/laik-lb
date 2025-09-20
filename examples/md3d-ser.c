@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
+#include <stdbool.h>
 #include <string.h>
 #include <sys/time.h>
 
@@ -397,10 +398,13 @@ static inline void write_vtk_snapshot(long step)
 // main //
 //////////
 
-int main()
+int main(int argc, char **argv)
 {
+    bool output = !(argc > 1 && !strcmp(argv[1], "-o"));
+
     printf("3D linked-cell Lennard-Jones cuboid collision\n");
     printf("domain: %g x %g x %g, cutoff=%g, dt=%g\n", DOMAIN_X, DOMAIN_Y, DOMAIN_Z, CUTOFF, DT);
+    printf("output: %d\n", output);
 
     // precompute lj constants
     sigma6 = pow(SIGMA, 6);
@@ -469,7 +473,7 @@ int main()
         t += DT;
 
         // log intermediate state
-        if ((step % print_every) == 0)
+        if (output && (step % print_every) == 0)
         {
             double ke = compute_kinetic();
             double total = ke + pot;
@@ -478,7 +482,7 @@ int main()
         }
 
         // log state to vtk output
-        if ((step % write_every) == 0)
+        if (output && (step % write_every) == 0)
         {
             write_vtk_snapshot(step);
         }

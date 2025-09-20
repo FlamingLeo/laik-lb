@@ -304,7 +304,7 @@ int main(int argc, char **argv)
     {
         printf("2D linked-cell Lennard-Jones cuboid collision\n");
         printf("domain: %g x %g, cutoff=%g, dt=%g\n", DOMAIN_X, DOMAIN_Y, CUTOFF, DT);
-        printf("profiling: %d, lblog: %d\n", profiling, lboutput);
+        printf("profiling: %d, lblog: %d, output: %d\n", profiling, lboutput, output);
         printf("weightstrat: %s\n", stratname(weightstrat));
         printf("using %s with load balancing every %d iterations\n\n", laik_get_lb_algorithm_name(lbalgo), lbevery);
     }
