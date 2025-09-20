@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
+#include <stdbool.h>
 #include <string.h>
 #include <sys/time.h>
 #include <omp.h>
@@ -375,11 +376,13 @@ static inline double compute_kinetic()
     return ke;
 }
 
-int main()
+int main(int argc, char **argv)
 {
+    bool output = !(argc > 1 && !strcmp(argv[1], "-o"));
+
     printf("3D linked-cell Lennard-Jones cuboid collision (OpenMP, task-based)\n");
     printf("domain: %g x %g x %g, cutoff=%g, dt=%g\n", DOMAIN_X, DOMAIN_Y, DOMAIN_Z, CUTOFF, DT);
-    printf("max threads: %d\n", omp_get_max_threads());
+    printf("max threads: %d, output: %d\n", omp_get_max_threads(), output);
 
     // precompute lj constants
     sigma6 = pow(SIGMA, 6);
@@ -448,7 +451,7 @@ int main()
         t += DT;
 
         // log intermediate state
-        if ((step % print_every) == 0)
+        if (output && (step % print_every) == 0)
         {
             double ke = compute_kinetic();
             double total = ke + pot;
