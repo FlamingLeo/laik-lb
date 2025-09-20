@@ -530,6 +530,7 @@ int main(int argc, char **argv)
         // follow intermediate state via kinetic energy (over particles)
         if (output && (step % print_every) == 0)
         {
+            laik_svg_profiler_enter(inst, "ke");
             double ke = 0.0;
             for (int i = 0; i < count; ++i)
                 ke += 0.5 * MASS * (baseVX[i] * baseVX[i] + baseVY[i] * baseVY[i]);
@@ -546,6 +547,7 @@ int main(int argc, char **argv)
             if (myid == 0)
                 printf("step %ld / %ld, t=%.4f, E=%.6f\n",
                        step, nsteps, t, total);
+            laik_svg_profiler_exit(inst, "ke");
         }
         laik_svg_profiler_exit(inst, "work");
     }
