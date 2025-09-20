@@ -17,6 +17,8 @@
 
 #include "laik.h"
 
+#define CSVNAME "array_data_md2d.csv"
+
 // simulation parameters
 #define START_TIME 0.0
 #define END_TIME 5.0 // def: 5.0 (feasable on home desktop)
@@ -162,7 +164,27 @@ int main(int argc, char **argv)
     Laik_Instance *inst = laik_init(&argc, &argv);
     Laik_Group *world = laik_world(inst);
     int myid = laik_myid(world);
-    bool profiling = (argc > 1 && strcmp(argv[1], "-p") == 0);
+    bool profiling = false, do_visualization = false, output = true;
+
+    // options:
+    // -p : export trace data
+    // -o : disable console output entirely
+    // -v : visualize final partitioning
+    for (int arg = 1; arg < argc; ++arg)
+    {
+        // profiling (svg)
+        if (!strcmp(argv[arg], "-p"))
+            profiling = true;
+
+        // do general output (disable this for accurate profiling!)
+        if (!strcmp(argv[arg], "-o"))
+            output = false;
+
+        // visualize final partitioning
+        if (!strcmp(argv[arg], "-v"))
+            do_visualization = true;
+    }
+
     if (profiling)
         laik_lbvis_enable_trace(myid, inst);
 
@@ -504,7 +526,7 @@ int main(int argc, char **argv)
         t += DT;
 
         // follow intermediate state via kinetic energy (over particles)
-        if ((step % print_every) == 0)
+        if (output && (step % print_every) == 0)
         {
             double ke = 0.0;
             for (int i = 0; i < count; ++i)
@@ -533,8 +555,23 @@ int main(int argc, char **argv)
     laik_svg_profiler_exit(inst, __func__);
     laik_svg_profiler_export_json(inst);
 
+    // visualize task ranges
+    if (do_visualization)
+    {
+        if (myid == 0)
+        {
+            Laik_RangeList *lr = laik_partitioning_myranges(cell_partitioning_w);
+            laik_lbvis_export_partitioning(CSVNAME, lr);
+#ifdef RUN_SCRIPTS
+            laik_lbvis_visualize_partitioning(CSVNAME);
+#endif
+        }
+    }
+
     laik_finalize(inst);
+#ifdef RUN_SCRIPTS
     if (myid == 0 && profiling)
         laik_lbvis_save_trace();
+#endif
     return 0;
 }

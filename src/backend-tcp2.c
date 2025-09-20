@@ -649,7 +649,7 @@ void send_cmd(InstData* d, int lid, char* cmd)
              cmd, len, lid, fd);
 
     // write cmd (cope with partial writes and errors)
-    int res, written = 0;
+    int res = -1, written = 0;
     while(written < len) {
         res = write(fd, cmd + written, len - written);
         if (res < 0) break;
@@ -679,7 +679,7 @@ void send_bin(InstData* d, int lid, char* buf, int len)
              len, lid, fd);
 
     // cope with partial writes and errors
-    int res, written = 0;
+    int res = -1, written = 0;
     while(written < len) {
         res = write(fd, buf + written, len - written);
         if (res < 0) break;

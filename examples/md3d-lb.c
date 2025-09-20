@@ -14,6 +14,8 @@
 
 #include "laik.h"
 
+#define CSVNAME "array_data_md3d_lb.csv"
+
 // use the defines the user requested
 // simulation parameters
 #define START_TIME 0.0
@@ -275,7 +277,7 @@ int main(int argc, char **argv)
     Laik_Instance *inst = laik_init(&argc, &argv);
     Laik_Group *world = laik_world(inst);
     int myid = laik_myid(world);
-    bool profiling = false, lboutput = false, output = true;
+    bool profiling = false, lboutput = false, output = true, do_visualization = false;
     int weightstrat = 0;                  // weight calculation strategy to use (0: time per cell, 1: particle proxy)
     int lbevery = 150;                    // do load balancing every __ iterations
     Laik_LBAlgorithm lbalgo = LB_GILBERT; // load balancing algorithm of choice
@@ -303,6 +305,10 @@ int main(int argc, char **argv)
         // do general output (disable this for accurate profiling!)
         if (!strcmp(argv[arg], "-o"))
             output = false;
+
+        // visualize final partitioning
+        if (!strcmp(argv[arg], "-v"))
+            do_visualization = true;
 
         // choose (valid!) weight strat
         if (arg + 1 < argc && !strcmp(argv[arg], "-w"))
@@ -862,8 +868,23 @@ int main(int argc, char **argv)
     laik_svg_profiler_exit(inst, __func__);
     laik_svg_profiler_export_json(inst);
 
+    // visualize task ranges
+    if (do_visualization)
+    {
+        if (myid == 0)
+        {
+            Laik_RangeList *lr = laik_partitioning_myranges(cell_partitioning_w);
+            laik_lbvis_export_partitioning(CSVNAME, lr);
+#ifdef RUN_SCRIPTS
+            laik_lbvis_visualize_partitioning(CSVNAME);
+#endif
+        }
+    }
+
     laik_finalize(inst);
+#ifdef RUN_SCRIPTS
     if (myid == 0 && profiling)
         laik_lbvis_save_trace();
+#endif
     return 0;
 }
