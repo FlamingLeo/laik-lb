@@ -1,12 +1,5 @@
 #!/usr/bin/env python3
-"""
-Usage: python blocks.py --input-dir json --block_size 100 --out prof.png  
-
-Expected JSON format: a top-level array of objects with fields:
-    { "name": "foo", "start": 0.001234, "end": 0.001567, "track": 1 }
-And iteration markers should have names like "__iter__:42".
-If an event appears before any marker for its track, it will be assigned iteration 0.
-"""
+# usage: python blocks.py --input-dir json --block_size 100 --out prof.svg
 
 import argparse
 import json
@@ -21,7 +14,6 @@ from matplotlib.patches import Rectangle
 ITER_MARKER_PREFIX = "__iter__:"
 
 def load_events_from_file(path):
-    """Load a JSON file that contains a top-level array of event objects."""
     with open(path, "r") as f:
         data = json.load(f)
     if not isinstance(data, list):
@@ -39,13 +31,6 @@ def load_events_from_file(path):
     return events
 
 def load_events_from_path(path, dedup=False):
-    """
-    Load events from either:
-      - a single JSON file (path points to a file), or
-      - a directory (path points to a directory) containing many .json files.
-    Returns a list of event dicts.
-    If dedup=True identical events (name,start,end,track) are removed.
-    """
     events = []
     files = []
     if os.path.isdir(path):
@@ -79,18 +64,9 @@ def load_events_from_path(path, dedup=False):
     return events
 
 def assign_events_to_iterations(events):
-    """
-    Given the raw events list (dicts with name, start, end, track),
-    return:
-      - mapping: (track -> { iter_num -> list_of_event_dicts })
-      - sorted list of all function names encountered (excluding iteration markers)
-      - max_iter found
-    Behavior:
-      - For each track, process events in ascending start time.
-      - When encounter a marker name "__iter__:N", set current_iter for that track to N.
-      - Otherwise assign that event to the current_iter for that track (default 0 if none yet).
-      - Assignment is by event start time (i.e., the state of current_iter at event start).
-    """
+    # for each track, process events in ascending start time
+    # when encountering a marker name "__iter__:N", set current_iter for that track to N
+    # otherwise assign that event to the current_iter for that track (default 0 if none yet)
     events_sorted = sorted(events, key=lambda e: e["start"])
     per_track_iter_events = defaultdict(lambda: defaultdict(list))
     functions_set = set()
@@ -151,7 +127,7 @@ def build_times_array(per_track_iter_events, functions, max_iter):
 
     return times, tracks
 
-def plot_blocks(times, function_names, block_size=100, out_path="profiling_blocks.png"):
+def plot_blocks(times, function_names, block_size=100, out_path="blocks.svg"):
     n_tasks, n_iters, n_funcs = times.shape
     n_blocks = (n_iters + block_size - 1) // block_size
 
@@ -217,10 +193,11 @@ def plot_blocks(times, function_names, block_size=100, out_path="profiling_block
     ax.set_yticks(yticks)
     ax.set_yticklabels(yticklabels)
     ax.set_xlabel("Time Offset (s)")
+    ax.set_ylabel("Task", rotation=90, labelpad=8)
     plt.tight_layout()
     plt.savefig(out_path, dpi=150)
     print(f"Saved plot to: {out_path}")
-    plt.show()
+    plt.close(fig)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Plot profiling events (JSON) as stacked iteration blocks.")
@@ -228,7 +205,7 @@ if __name__ == "__main__":
     parser.add_argument("--input-dir", help="Directory containing JSON files (alternative to --input)")
     parser.add_argument("--dedup", action="store_true", help="Deduplicate identical events across files")
     parser.add_argument("--block_size", type=int, default=100, help="Iterations per block")
-    parser.add_argument("--out", default="profiling_blocks.png", help="Output image path")
+    parser.add_argument("--out", default="blocks.svg", help="Output image path")
     args = parser.parse_args()
 
     path = None
