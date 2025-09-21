@@ -7,9 +7,12 @@ import os
 import glob
 import sys
 from collections import defaultdict
+import hashlib
+import colorsys
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
+import matplotlib.colors as mcolors
 
 ITER_MARKER_PREFIX = "__iter__:"
 
@@ -127,6 +130,17 @@ def build_times_array(per_track_iter_events, functions, max_iter):
 
     return times, tracks
 
+
+def name_to_color_hex(name: str, saturation: float = 0.6, lightness: float = 0.5) -> str:
+    # stable integer from name
+    hsh = hashlib.sha1(name.encode("utf-8")).hexdigest()
+    # take a slice and map into 0..359
+    hue = int(hsh[:8], 16) % 360
+    h = hue / 360.0
+    r, g, b = colorsys.hls_to_rgb(h, lightness, saturation)
+    return mcolors.to_hex((r, g, b))
+
+
 def plot_blocks(times, function_names, block_size=100, out_path="blocks.svg"):
     n_tasks, n_iters, n_funcs = times.shape
     n_blocks = (n_iters + block_size - 1) // block_size
@@ -146,13 +160,14 @@ def plot_blocks(times, function_names, block_size=100, out_path="blocks.svg"):
     first_block_all_tasks = block_sums[:, 0, :].sum(axis=0)
     order = np.argsort(-first_block_all_tasks)  # largest-first
 
+    # create deterministic colors per function name (stable across inputs)
+    func_colors = {i: name_to_color_hex(function_names[i]) for i in range(n_funcs)}
+
     # plotting
     fig, ax = plt.subplots(figsize=(12, 3 + n_tasks * 0.45))
     task_height = 0.8
     y_gap = 0.4
     yticks, yticklabels = [], []
-    color_cycle = plt.rcParams['axes.prop_cycle'].by_key()['color']
-    func_colors = {i: color_cycle[i % len(color_cycle)] for i in range(n_funcs)}
     max_right = 0.0
 
     for task in range(n_tasks):
@@ -175,10 +190,6 @@ def plot_blocks(times, function_names, block_size=100, out_path="blocks.svg"):
                 y_current += h
             # vertical separator
             ax.add_line(plt.Line2D([x_offset + width, x_offset + width], [y_bottom_lane, y_bottom_lane + task_height], color='black', linewidth=0.3)) # type: ignore
-            if task == 0:
-                start_iter = b * block_size
-                end_iter = min((b + 1) * block_size, n_iters) - 1
-                # ax.text(x_offset + width/2, y_bottom_lane + task_height + 0.05, f"{start_iter}-{end_iter}", ha='center', va='bottom', fontsize=7)
             x_offset += width
         max_right = max(max_right, x_offset)
 
