@@ -231,8 +231,6 @@ int main(int argc, char **argv)
     if (profiling)
         laik_lbvis_enable_trace(myid, inst);
 
-    laik_svg_profiler_enter(inst, __func__);
-
     if (myid == 0)
     {
         printf("3D linked-cell Lennard-Jones cuboid collision\n");
@@ -403,19 +401,21 @@ int main(int argc, char **argv)
 
     double t = START_TIME;
     laik_timer_start(&timer);
-    laik_svg_profiler_enter(inst, "integration-loop");
     for (long step = 0; step < nsteps; ++step)
     {
-        laik_svg_profiler_enter(inst, "pos,force: master -> block");
+        laik_svg_profiler_mark_iteration(inst, step);
+
+        laik_svg_profiler_enter(inst, "switch");
         laik_switchto_partitioning(data_x, particle_space_partitioning, LAIK_DF_Preserve, LAIK_RO_None);
         laik_switchto_partitioning(data_y, particle_space_partitioning, LAIK_DF_Preserve, LAIK_RO_None);
         laik_switchto_partitioning(data_z, particle_space_partitioning, LAIK_DF_Preserve, LAIK_RO_None);
         laik_switchto_partitioning(data_ax, particle_space_partitioning, LAIK_DF_Preserve, LAIK_RO_None);
         laik_switchto_partitioning(data_ay, particle_space_partitioning, LAIK_DF_Preserve, LAIK_RO_None);
         laik_switchto_partitioning(data_az, particle_space_partitioning, LAIK_DF_Preserve, LAIK_RO_None);
-        laik_svg_profiler_exit(inst, "pos,force: master -> block");
+        laik_svg_profiler_exit(inst, "switch");
 
         // count is all the same here (identical partitioning)
+        laik_svg_profiler_enter(inst, "work");
         laik_get_map_1d(data_x, 0, (void **)&baseX, &count);
         laik_get_map_1d(data_y, 0, (void **)&baseY, 0);
         laik_get_map_1d(data_z, 0, (void **)&baseZ, 0);
@@ -439,22 +439,22 @@ int main(int argc, char **argv)
         }
 
         // distribute relevant data for acceleration calculation to all tasks
-        laik_svg_profiler_enter(inst, "pos,force: block -> all");
+        laik_svg_profiler_exit(inst, "work");
+        laik_svg_profiler_enter(inst, "switch");
         laik_switchto_partitioning(data_x, particle_space_partitioning_all, LAIK_DF_Preserve, LAIK_RO_None);
         laik_switchto_partitioning(data_y, particle_space_partitioning_all, LAIK_DF_Preserve, LAIK_RO_None);
         laik_switchto_partitioning(data_z, particle_space_partitioning_all, LAIK_DF_Preserve, LAIK_RO_None);
         laik_switchto_partitioning(data_ax, particle_space_partitioning_all, LAIK_DF_Preserve, LAIK_RO_None);
         laik_switchto_partitioning(data_ay, particle_space_partitioning_all, LAIK_DF_Preserve, LAIK_RO_None);
         laik_switchto_partitioning(data_az, particle_space_partitioning_all, LAIK_DF_Preserve, LAIK_RO_None);
-        laik_svg_profiler_exit(inst, "pos,force: block -> all");
 
         // master (re-)initializes cell list
-        laik_svg_profiler_enter(inst, "w,r,next: init");
         laik_switchto_partitioning(data_head_w, cell_partitioning_master, LAIK_DF_None, LAIK_RO_None);
         laik_switchto_partitioning(data_head_r, cell_partitioning_master, LAIK_DF_None, LAIK_RO_None);
         laik_switchto_partitioning(data_next, particle_space_partitioning_master, LAIK_DF_None, LAIK_RO_None);
-        laik_svg_profiler_exit(inst, "w,r,next: init");
+        laik_svg_profiler_exit(inst, "switch");
 
+        laik_svg_profiler_enter(inst, "work");
         if (myid == 0)
         {
             uint64_t zsize, zstride, ysize, ystride, xsize;
@@ -491,16 +491,18 @@ int main(int argc, char **argv)
                 baseHeadR[c] = p;
             }
         }
+        laik_svg_profiler_exit(inst, "work");
 
         // partition initialized cell list across all tasks
-        laik_svg_profiler_enter(inst, "w,r,next: master -> ?/halo/all");
+        laik_svg_profiler_enter(inst, "switch");
         laik_switchto_partitioning(data_head_w, cell_partitioning_w, LAIK_DF_Preserve, LAIK_DF_None);
         laik_switchto_partitioning(data_head_r, cell_partitioning_r, LAIK_DF_Preserve, LAIK_DF_None);
         laik_switchto_partitioning(data_next, particle_space_partitioning_all, LAIK_DF_Preserve, LAIK_DF_None);
-        laik_svg_profiler_exit(inst, "w,r,next: master -> ?/halo/all");
+        laik_svg_profiler_exit(inst, "switch");
 
         // all   : x,y,z,ax,ay,az
         // bisect: cell head W/R (halo)
+        laik_svg_profiler_enter(inst, "work");
         laik_get_map_1d(data_x, 0, (void **)&baseX, 0);
         laik_get_map_1d(data_y, 0, (void **)&baseY, 0);
         laik_get_map_1d(data_z, 0, (void **)&baseZ, 0);
@@ -612,20 +614,20 @@ int main(int argc, char **argv)
                 }
             }
         }
+        laik_svg_profiler_exit(inst, "work");
 
         // aggregate forces for velocity calc
-        laik_svg_profiler_enter(inst, "pos: all -> master/block");
+        laik_svg_profiler_enter(inst, "switch");
         laik_switchto_partitioning(data_x, particle_space_partitioning_master, LAIK_DF_Preserve, LAIK_RO_Max); // doesn't really do anything, just so ALL -> BLOCK in the next step will work
         laik_switchto_partitioning(data_y, particle_space_partitioning_master, LAIK_DF_Preserve, LAIK_RO_Max);
         laik_switchto_partitioning(data_z, particle_space_partitioning_master, LAIK_DF_Preserve, LAIK_RO_Max);
-        laik_svg_profiler_exit(inst, "pos: all -> master/block");
 
-        laik_svg_profiler_enter(inst, "force: all -> block");
         laik_switchto_partitioning(data_ax, particle_space_partitioning, LAIK_DF_Preserve, LAIK_RO_Sum);
         laik_switchto_partitioning(data_ay, particle_space_partitioning, LAIK_DF_Preserve, LAIK_RO_Sum);
         laik_switchto_partitioning(data_az, particle_space_partitioning, LAIK_DF_Preserve, LAIK_RO_Sum);
-        laik_svg_profiler_exit(inst, "force: all -> block");
+        laik_svg_profiler_exit(inst, "switch");
 
+        laik_svg_profiler_enter(inst, "work");
         laik_get_map_1d(data_ax, 0, (void **)&baseAX, &count); // count probably not needed here
         laik_get_map_1d(data_ay, 0, (void **)&baseAY, 0);
         laik_get_map_1d(data_az, 0, (void **)&baseAZ, 0);
@@ -643,6 +645,7 @@ int main(int argc, char **argv)
         // follow intermediate state via kinetic energy (over particles)
         if (output && (step % print_every) == 0)
         {
+            laik_svg_profiler_enter(inst, "ke");
             double ke = 0.0;
             for (int i = 0; i < count; ++i)
                 ke += 0.5 * MASS * (baseVX[i] * baseVX[i] + baseVY[i] * baseVY[i] + baseVZ[i] * baseVZ[i]);
@@ -659,15 +662,15 @@ int main(int argc, char **argv)
             if (myid == 0)
                 printf("step %ld / %ld, t=%.4f, E=%.6f\n",
                        step, nsteps, t, total);
+            laik_svg_profiler_exit(inst, "ke");
         }
+        laik_svg_profiler_exit(inst, "work");
     }
-    laik_svg_profiler_exit(inst, "integration-loop");
     double taken = laik_timer_stop(&timer);
 
     if (myid == 0)
         printf("Done. Time taken: %fs\n", taken);
 
-    laik_svg_profiler_exit(inst, __func__);
     laik_svg_profiler_export_json(inst);
 
     // visualize task ranges

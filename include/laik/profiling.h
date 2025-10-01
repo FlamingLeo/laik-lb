@@ -64,5 +64,6 @@ void laik_svg_enable_profiling(Laik_Instance *i, const char *filename);
 void laik_svg_profiler_enter(Laik_Instance *i, const char *func_name);
 void laik_svg_profiler_exit(Laik_Instance *i, const char *func_name);
 void laik_svg_profiler_export_json(Laik_Instance *i);
+void laik_svg_profiler_mark_iteration(Laik_Instance* i, int iter);
 
 #endif // LAIK_PROFILING_H

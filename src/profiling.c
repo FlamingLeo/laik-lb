@@ -82,6 +82,33 @@
 static Laik_Instance* laik_profinst = 0;
 extern char* __progname;
 
+// helper: write json output and escape whitespace characters
+static void write_json_string(FILE *out, const char *s)
+{
+    fputc('"', out);
+    if (!s) { fputc('"', out); return; }
+    for (const unsigned char *p = (const unsigned char*)s; *p; ++p) {
+        unsigned char c = *p;
+        switch (c) {
+            case '"':  fputs("\\\"", out); break;
+            case '\\': fputs("\\\\", out); break;
+            case '\b': fputs("\\b", out); break;
+            case '\f': fputs("\\f", out); break;
+            case '\n': fputs("\\n", out); break;
+            case '\r': fputs("\\r", out); break;
+            case '\t': fputs("\\t", out); break;
+            default:
+                if (c < 0x20) {
+                    // control characters
+                    fprintf(out, "\\u%04x", (int)c);
+                } else {
+                    fputc(c, out);
+                }
+        }
+    }
+    fputc('"', out);
+}
+
 // helper: free svg visualization state event list
 static void free_event_list(Laik_Instance* i)
 {
@@ -371,25 +398,82 @@ void laik_svg_profiler_exit(Laik_Instance* i, const char *func_name)
     }
 }
 
+// push a marker event (zero-length) to the head list
+void laik_svg_profiler_mark_iteration(Laik_Instance* i, int iter)
+{
+    if (!i) return;
+    if (!i->profiling->do_profiling) return;
+
+    Laik_Profiling_EventList *node = malloc(sizeof *node);
+    if (!node) return;
+
+    char buf[64];
+    int n = snprintf(buf, sizeof(buf), "__iter__:%d", iter);
+    if (n < 0) {
+        free(node);
+        return;
+    }
+
+    node->ev.name = strdup(buf);
+    if (!node->ev.name) {
+        free(node);
+        return;
+    }
+    node->ev.start = laik_wtime();
+    node->ev.end   = node->ev.start; // zero-length marker
+    node->ev.depth = i->profiling->depth;
+    node->next     = i->profiling->head;
+    i->profiling->head = node;
+}
+
 // export current profiler event state to json-formatted file (or do nothing if profiling is disabled)
 void laik_svg_profiler_export_json(Laik_Instance* i)
 {
     EARLY_RETURN();
-    
+
     if(!(i->profiling->do_profiling)) return;
 
     FILE* out = (FILE*) i->profiling->profile_file;
+    if (!out) return;
 
-    fprintf(out, "[\n");
-    bool first = true;
+    // collect closed events into a dynamic array of pointers
+    size_t cap = 64;
+    size_t len = 0;
+    Laik_Profiling_EventList **arr = malloc(sizeof(*arr) * cap);
+    if (!arr) return;
+
     for (Laik_Profiling_EventList *n = i->profiling->head; n; n = n->next) {
-        // skip any that never got closed
-        if (n->ev.end < 0) continue;
-        if (!first) fprintf(out, ",\n");
-        first = false;
-        fprintf(out,
-          "  { \"name\": \"%s\", \"start\": %.6f, \"end\": %.6f, \"track\": %d }",
-          n->ev.name, n->ev.start, n->ev.end, laik_myid(i->world));
+        if (n->ev.end < 0) continue; // skip incomplete
+        if (len >= cap) {
+            cap *= 2;
+            Laik_Profiling_EventList **tmp = realloc(arr, sizeof(*arr) * cap);
+            if (!tmp) break; // abort collecting
+            arr = tmp;
+        }
+        arr[len++] = n;
+    }
+
+    // reverse array (could probably also update the python script to read json bottom-to-top, but this seems easier and isn't too slow)
+    for (size_t i = 0; i < len / 2; ++i) {
+        Laik_Profiling_EventList *tmp = arr[i];
+        arr[i] = arr[len - 1 - i];
+        arr[len - 1 - i] = tmp;
+    }
+
+    // write JSON array
+    fprintf(out, "[\n");
+    for (size_t idx = 0; idx < len; ++idx) {
+        Laik_Profiling_EventList *n = arr[idx];
+        fprintf(out, "  { ");
+        fprintf(out, "\"name\": ");
+        write_json_string(out, n->ev.name);
+        fprintf(out, ", \"start\": %.6f, \"end\": %.6f, \"track\": %d ",
+                n->ev.start, n->ev.end, laik_myid(i->world));
+        fprintf(out, "}");
+        if (idx + 1 < len) fprintf(out, ",\n");
     }
     fprintf(out, "\n]\n");
+
+    // free temp array
+    free(arr);
 }
