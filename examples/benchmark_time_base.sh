@@ -28,7 +28,7 @@ if [ -z "$SAFE_PROG" ]; then
   SAFE_PROG="program"
 fi
 
-OUT_CSV="${RESULTS_DIR}/results_${SAFE_PROG}.csv"
+OUT_CSV="${RESULTS_DIR}/results_time_base_${SAFE_PROG}.csv"
 
 # TASKS to test
 TASKS_LIST=(2 4 8 16 32 64)

@@ -39,7 +39,7 @@ if [ -z "$SAFE_PROG" ]; then
   SAFE_PROG="program"
 fi
 
-OUT_CSV="${RESULTS_DIR}/results_${SAFE_PROG}.csv"
+OUT_CSV="${RESULTS_DIR}/results_time_lb_${SAFE_PROG}.csv"
 
 # create CSV header if missing
 if [ ! -f "$OUT_CSV" ]; then

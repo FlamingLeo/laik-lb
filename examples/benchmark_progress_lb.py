@@ -26,7 +26,7 @@ logs_dir = Path("logs")
 results_dir.mkdir(exist_ok=True)
 logs_dir.mkdir(exist_ok=True)
 
-output_file = results_dir / f"results_progress_{PROG_NAME}.csv"
+output_file = results_dir / f"results_progress_lb_{PROG_NAME}.csv"
 
 with open(output_file, "w", newline="") as csvfile:
     writer = csv.writer(csvfile)

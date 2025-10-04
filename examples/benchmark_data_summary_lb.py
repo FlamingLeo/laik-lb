@@ -161,7 +161,7 @@ def main():
 
     sample_cmd = f"mpirun -n {NTASKS_LIST[0]} ./{args.program} -n {PROG_N_LIST[0]} -a {ALGORITHMS[0]}"
     inferred_prog = extract_program_name(sample_cmd, NTASKS_LIST[0])
-    out_csv = os.path.join(results_dir, f"results_data_{inferred_prog}.csv")
+    out_csv = os.path.join(results_dir, f"results_data_lb_{inferred_prog}.csv")
 
     csv_fields = [
         "ntasks",
