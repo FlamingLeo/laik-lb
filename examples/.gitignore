@@ -53,3 +53,5 @@ README-example
 /vsum3
 *core*
 logs/
+results/
+outputs/

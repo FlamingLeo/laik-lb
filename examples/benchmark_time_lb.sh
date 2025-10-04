@@ -2,25 +2,27 @@
 set -u
 
 MPIRUN_BIN=mpirun
-PROGRAM=./md3d-lb
+PROGRAM="./md-lb"
 COMMON_ARGS_ARRAY=("-o")
-OUT_CSV="results_md3d-lb.csv"
 LOG_DIR="./logs"
+RESULTS_DIR="results"
 TASKS_LIST=(2 4 8 16 32 64)
 PROG_N_LIST=(100 250 500 1000)
 ALGO_LIST=(rcb rcbincr hilbert gilbert)
 REPEATS=2
 
-mkdir -p "$LOG_DIR"
-
-# create CSV header if missing
-if [ ! -f "$OUT_CSV" ]; then
-  printf '%s\n' "timestamp,tasks,prog_n,algorithm,attempt,exit_code,time_s,logfile,cmd" > "$OUT_CSV"
+# program override via single positional argument
+if [ $# -ge 1 ]; then
+  PROGRAM="$1"
 fi
 
-# create safe tag
+mkdir -p "$LOG_DIR"
+mkdir -p "$RESULTS_DIR"
+
 safe_tag() {
-  echo "$1" | tr ' /' '__' | tr -cd 'A-Za-z0-9_-.'
+  local s
+  s=$(printf '%s' "$1" | tr ' /' '__')
+  printf '%s' "$s" | LC_ALL=C tr -cd 'A-Za-z0-9_.-'
 }
 
 # escape field for CSV
@@ -30,19 +32,35 @@ escape_csv() {
   printf '"%s"' "$s"
 }
 
+# derive output CSV from program basename
+PROG_BASENAME=$(basename -- "$PROGRAM")
+SAFE_PROG=$(safe_tag "$PROG_BASENAME")
+if [ -z "$SAFE_PROG" ]; then
+  SAFE_PROG="program"
+fi
+
+OUT_CSV="${RESULTS_DIR}/results_${SAFE_PROG}.csv"
+
+# create CSV header if missing
+if [ ! -f "$OUT_CSV" ]; then
+  printf '%s\n' "timestamp,tasks,prog_n,algorithm,attempt,exit_code,time_s,logfile,cmd" > "$OUT_CSV"
+fi
+
 for TASKS in "${TASKS_LIST[@]}"; do
   for PROG_N in "${PROG_N_LIST[@]}"; do
     for ALGO in "${ALGO_LIST[@]}"; do
 
       for (( ATT=1; ATT<=REPEATS; ATT++ )); do
         TS=$(date -Iseconds)
-        TAG="t${TASKS}_n${PROG_N}_a${ALGO}_att${ATT}_$(date +%s)"
+        TAG="t${TASKS}_n${PROG_N}_a${ALGO}_att${ATT}_$(date +%s)_$RANDOM"
         LOGFILE="${LOG_DIR}/run_${TAG}.log"
+
+        # build the command array
         CMD_ARR=( "$MPIRUN_BIN" -n "$TASKS" "$PROGRAM" )
         for a in "${COMMON_ARGS_ARRAY[@]}"; do CMD_ARR+=( "$a" ); done
         CMD_ARR+=( -n "$PROG_N" -a "$ALGO" )
 
-        # for CSV store a printable command string
+        # printable command string for CSV
         CMD_STR="$(printf '%q ' "${CMD_ARR[@]}")"
 
         printf 'Running (attempt %d/%d): tasks=%s prog_n=%s algo=%s -> %s\n' "$ATT" "$REPEATS" "$TASKS" "$PROG_N" "$ALGO" "$LOGFILE"
@@ -58,7 +76,7 @@ for TASKS in "${TASKS_LIST[@]}"; do
           TIME_STR="NA"
         fi
 
-        # append CSV line (quote fields)
+        # append CSV line (quote fields where appropriate)
         printf '%s,%s,%s,%s,%d,%d,%s,%s,%s\n' \
           "$(escape_csv "$TS")" \
           "$TASKS" \
