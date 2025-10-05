@@ -455,6 +455,11 @@ int main(int argc, char **argv)
     ////////////////////////////////////
 
     double t = START_TIME;
+
+    // accumulate time spent in work regions (exclude switch/communication)
+    Laik_Timer work_timer = {0};
+    double work_time = 0.0;
+
     laik_timer_start(&timer);
     for (long step = 0; step < nsteps; ++step)
     {
@@ -469,6 +474,7 @@ int main(int argc, char **argv)
 
         // count is all the same here (identical partitioning)
         laik_svg_profiler_enter(inst, "work");
+        laik_timer_start(&work_timer); // start measuring this work region
         laik_get_map_1d(data_x, 0, (void **)&baseX, &count);
         laik_get_map_1d(data_y, 0, (void **)&baseY, 0);
         laik_get_map_1d(data_ax, 0, (void **)&baseAX, 0);
@@ -486,8 +492,10 @@ int main(int argc, char **argv)
             baseAY[i] = 0.0;
         }
 
-        // distribute relevant data for acceleration calculation to all tasks
         laik_svg_profiler_exit(inst, "work");
+        work_time += laik_timer_stop(&work_timer); // stop and accumulate
+
+        // distribute relevant data for acceleration calculation to all tasks
         laik_svg_profiler_enter(inst, "switch");
         laik_switchto_partitioning(data_x, particle_space_partitioning_all, LAIK_DF_Preserve, LAIK_RO_None);
         laik_switchto_partitioning(data_y, particle_space_partitioning_all, LAIK_DF_Preserve, LAIK_RO_None);
@@ -501,6 +509,7 @@ int main(int argc, char **argv)
         laik_svg_profiler_exit(inst, "switch");
 
         laik_svg_profiler_enter(inst, "work");
+        laik_timer_start(&work_timer); // start measuring this work region
         if (myid == 0)
         {
             int64_t ysize, ystride, xsize;
@@ -532,6 +541,7 @@ int main(int argc, char **argv)
             }
         }
         laik_svg_profiler_exit(inst, "work");
+        work_time += laik_timer_stop(&work_timer); // stop and accumulate
 
         // partition initialized cell list across all tasks
         laik_svg_profiler_enter(inst, "switch");
@@ -553,6 +563,7 @@ int main(int argc, char **argv)
         // all   : x,y,ax,ay
         // bisect: cell head W/R (halo)
         laik_svg_profiler_enter(inst, "work");
+        laik_timer_start(&work_timer); // start measuring this work region
         laik_get_map_1d(data_x, 0, (void **)&baseX, 0);
         laik_get_map_1d(data_y, 0, (void **)&baseY, 0);
         laik_get_map_1d(data_ax, 0, (void **)&baseAX, 0);
@@ -679,6 +690,9 @@ int main(int argc, char **argv)
             } // end cy
         } // end ranges
 
+        laik_svg_profiler_exit(inst, "work");
+        work_time += laik_timer_stop(&work_timer); // stop and accumulate
+
         // stop load balancing, use custom weights and adjust partitioning pointers
         if ((step % lbevery == (lbevery - 1)))
         {
@@ -690,7 +704,6 @@ int main(int argc, char **argv)
         else
             laik_lb_balance(PAUSE_LB_SEGMENT, 0, 0);
 
-        laik_svg_profiler_exit(inst, "work");
         // aggregate forces for velocity calc
         // NOTE: this is the part where tasks must wait for all other tasks to finish computing forces,
         //       since we need to aggregate x,y,ax,ay, which we used (all)
@@ -704,6 +717,7 @@ int main(int argc, char **argv)
         laik_svg_profiler_exit(inst, "switch");
 
         laik_svg_profiler_enter(inst, "work");
+        laik_timer_start(&work_timer);                         // start measuring this work region
         laik_get_map_1d(data_ax, 0, (void **)&baseAX, &count); // count probably not needed here
         laik_get_map_1d(data_ay, 0, (void **)&baseAY, 0);
 
@@ -741,6 +755,7 @@ int main(int argc, char **argv)
             laik_svg_profiler_exit(inst, "ke");
         }
         laik_svg_profiler_exit(inst, "work");
+        work_time += laik_timer_stop(&work_timer); // stop and accumulate
     } // end loop
     double tfinal = laik_timer_stop(&timer);
 
@@ -767,5 +782,10 @@ int main(int argc, char **argv)
     if (myid == 0 && profiling)
         laik_lbvis_save_trace();
 #endif
+
+    // print effective work time
+    double pct = (tfinal > 0.0) ? (100.0 * work_time / tfinal) : 0.0;
+    printf("Task %d: effective work time (excluding switches) = %fs (%.2f%% of total elapsed loop time)\n", myid, work_time, pct);
+
     return 0;
 }
