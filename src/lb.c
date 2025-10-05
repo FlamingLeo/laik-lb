@@ -1738,56 +1738,121 @@ static void rcb_3d(Laik_RangeReceiver *r, Laik_Range *range, int fromTask, int t
     int64_t split_y = from_y;
     int64_t split_z = from_z;
 
-    if (axis == 0)
+    // special-case: no weight information -> balanced by index
+    if (totalW <= 0.0)
     {
-        // x longest: for each x, sum over all y,z
-        for (int64_t x = from_x; x < to_x; ++x)
+        if (axis == 0)
+            split_x = from_x + (dx * lcount) / count;
+        else if (axis == 1)
+            split_y = from_y + (dy * lcount) / count;
+        else
+            split_z = from_z + (dz * lcount) / count;
+    }
+    else
+    {
+        if (axis == 0)
         {
-            for (int64_t y = from_y; y < to_y; ++y)
-                for (int64_t z = from_z; z < to_z; ++z)
-                    sum += get_idx_weight_3d(weights, size_x, size_y, x, y, z);
-
-            if (sum >= ltarget)
+            for (int64_t x = from_x; x < to_x; ++x)
             {
-                split_x = x;
-                laik_log(1, "lb/rcb_3d: found x-split at x = %ld (sum: %f)\n", x, sum);
-                break;
+                for (int64_t y = from_y; y < to_y; ++y)
+                    for (int64_t z = from_z; z < to_z; ++z)
+                        sum += get_idx_weight_3d(weights, size_x, size_y, x, y, z);
+
+                if (sum >= ltarget)
+                {
+                    split_x = x + 1;
+                    if (split_x > to_x)
+                        split_x = to_x;
+                    laik_log(1, "lb/rcb_3d: found x at x=%ld, splitting at %ld (sum: %f)\n", x, split_x, sum);
+                    break;
+                }
             }
         }
+        else if (axis == 1)
+        {
+            for (int64_t y = from_y; y < to_y; ++y)
+            {
+                for (int64_t x = from_x; x < to_x; ++x)
+                    for (int64_t z = from_z; z < to_z; ++z)
+                        sum += get_idx_weight_3d(weights, size_x, size_y, x, y, z);
+
+                if (sum >= ltarget)
+                {
+                    split_y = y + 1;
+                    if (split_y > to_y)
+                        split_y = to_y;
+                    laik_log(1, "lb/rcb_3d: found y at y=%ld, splitting at %ld (sum: %f)\n", y, split_y, sum);
+                    break;
+                }
+            }
+        }
+        else
+        { /* axis == 2 */
+            for (int64_t z = from_z; z < to_z; ++z)
+            {
+                for (int64_t x = from_x; x < to_x; ++x)
+                    for (int64_t y = from_y; y < to_y; ++y)
+                        sum += get_idx_weight_3d(weights, size_x, size_y, x, y, z);
+
+                if (sum >= ltarget)
+                {
+                    split_z = z + 1;
+                    if (split_z > to_z)
+                        split_z = to_z;
+                    laik_log(1, "lb/rcb_3d: found z at z=%ld, splitting at %ld (sum: %f)\n", z, split_z, sum);
+                    break;
+                }
+            }
+        }
+
+        // index-balanced fallback
+        if (axis == 0 && (split_x <= from_x || split_x >= to_x))
+        {
+            split_x = from_x + (dx * lcount) / count;
+            if (split_x <= from_x)
+                split_x = from_x + 1;
+            if (split_x >= to_x)
+                split_x = to_x - 1;
+        }
+        else if (axis == 1 && (split_y <= from_y || split_y >= to_y))
+        {
+            split_y = from_y + (dy * lcount) / count;
+            if (split_y <= from_y)
+                split_y = from_y + 1;
+            if (split_y >= to_y)
+                split_y = to_y - 1;
+        }
+        else if (axis == 2 && (split_z <= from_z || split_z >= to_z))
+        {
+            split_z = from_z + (dz * lcount) / count;
+            if (split_z <= from_z)
+                split_z = from_z + 1;
+            if (split_z >= to_z)
+                split_z = to_z - 1;
+        }
+    }
+
+    // last resort guard
+    if (axis == 0)
+    {
+        if (split_x <= from_x)
+            split_x = from_x + 1;
+        if (split_x >= to_x)
+            split_x = to_x - 1;
     }
     else if (axis == 1)
     {
-        // y longest: for each y, sum over all x,z
-        for (int64_t y = from_y; y < to_y; ++y)
-        {
-            for (int64_t x = from_x; x < to_x; ++x)
-                for (int64_t z = from_z; z < to_z; ++z)
-                    sum += get_idx_weight_3d(weights, size_x, size_y, x, y, z);
-
-            if (sum >= ltarget)
-            {
-                split_y = y;
-                laik_log(1, "lb/rcb_3d: found y-split at y = %ld (sum: %f)\n", y, sum);
-                break;
-            }
-        }
+        if (split_y <= from_y)
+            split_y = from_y + 1;
+        if (split_y >= to_y)
+            split_y = to_y - 1;
     }
-    else /* axis == 2 */
+    else
     {
-        // z longest: for each z, sum over all x,y
-        for (int64_t z = from_z; z < to_z; ++z)
-        {
-            for (int64_t x = from_x; x < to_x; ++x)
-                for (int64_t y = from_y; y < to_y; ++y)
-                    sum += get_idx_weight_3d(weights, size_x, size_y, x, y, z);
-
-            if (sum >= ltarget)
-            {
-                split_z = z;
-                laik_log(1, "lb/rcb_3d: found z-split at z = %ld (sum: %f)\n", z, sum);
-                break;
-            }
-        }
+        if (split_z <= from_z)
+            split_z = from_z + 1;
+        if (split_z >= to_z)
+            split_z = to_z - 1;
     }
 
     // cut and recurse
