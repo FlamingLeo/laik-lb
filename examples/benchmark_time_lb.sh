@@ -25,13 +25,6 @@ safe_tag() {
   printf '%s' "$s" | LC_ALL=C tr -cd 'A-Za-z0-9_.-'
 }
 
-# escape field for CSV
-escape_csv() {
-  local s="$1"
-  s="${s//\"/\"\"}"
-  printf '"%s"' "$s"
-}
-
 # derive output CSV from program basename
 PROG_BASENAME=$(basename -- "$PROGRAM")
 SAFE_PROG=$(safe_tag "$PROG_BASENAME")
@@ -43,7 +36,7 @@ OUT_CSV="${RESULTS_DIR}/results_time_lb_${SAFE_PROG}.csv"
 
 # create CSV header if missing
 if [ ! -f "$OUT_CSV" ]; then
-  printf '%s\n' "timestamp,tasks,prog_n,algorithm,attempt,exit_code,time_s,logfile,cmd" > "$OUT_CSV"
+  printf '%s\n' "timestamp,tasks,prog_n,algorithm,attempt,exit_code,time_s,per_task_times_s,per_task_pct,logfile,cmd" > "$OUT_CSV"
 fi
 
 for TASKS in "${TASKS_LIST[@]}"; do
@@ -60,8 +53,9 @@ for TASKS in "${TASKS_LIST[@]}"; do
         for a in "${COMMON_ARGS_ARRAY[@]}"; do CMD_ARR+=( "$a" ); done
         CMD_ARR+=( -n "$PROG_N" -a "$ALGO" )
 
-        # printable command string for CSV
+        # printable command string (trim trailing space)
         CMD_STR="$(printf '%q ' "${CMD_ARR[@]}")"
+        CMD_STR="${CMD_STR% }"
 
         printf 'Running (attempt %d/%d): tasks=%s prog_n=%s algo=%s -> %s\n' "$ATT" "$REPEATS" "$TASKS" "$PROG_N" "$ALGO" "$LOGFILE"
 
@@ -69,27 +63,39 @@ for TASKS in "${TASKS_LIST[@]}"; do
         "${CMD_ARR[@]}" > "$LOGFILE" 2>&1
         EXIT_CODE=$?
 
-        # parse time, expect: "Done. Time taken: XX.XXs"
+        # parse total time
         TIME_STR=$(grep -oE 'Done\. Time taken: [0-9]+(\.[0-9]+)?s' "$LOGFILE" | head -n1 | sed -E 's/Done\. Time taken: ([0-9]+(\.[0-9]+)?)s/\1/')
-
         if [ -z "$TIME_STR" ]; then
           TIME_STR="NA"
         fi
 
-        # append CSV line (quote fields where appropriate)
-        printf '%s,%s,%s,%s,%d,%d,%s,%s,%s\n' \
-          "$(escape_csv "$TS")" \
-          "$TASKS" \
-          "$PROG_N" \
-          "$(escape_csv "$ALGO")" \
-          "$ATT" \
-          "$EXIT_CODE" \
-          "$(escape_csv "$TIME_STR")" \
-          "$(escape_csv "$LOGFILE")" \
-          "$(escape_csv "$CMD_STR")" >> "$OUT_CSV"
+        # parse per-task effective times & percentages
+        mapfile -t TASK_LINES < <(sed -n 's/Task \([0-9][0-9]*\): effective work time (excluding switches) = \([0-9][0-9]*\(\.[0-9][0-9]*\)\?\)s (\([0-9][0-9]*\(\.[0-9][0-9]*\)\?\)% of total elapsed loop time).*/\1,\2,\4/p' "$LOGFILE" | sort -t, -k1,1n)
+
+        if [ "${#TASK_LINES[@]}" -eq 0 ]; then
+          PER_TASK_TIMES="NA"
+          PER_TASK_PCTS="NA"
+        else
+          PER_TASK_TIMES=""
+          PER_TASK_PCTS=""
+          for line in "${TASK_LINES[@]}"; do
+            IFS=, read -r tid tsecs tpct <<< "$line"
+            if [ -z "$PER_TASK_TIMES" ]; then
+              PER_TASK_TIMES="${tid}:${tsecs}"
+              PER_TASK_PCTS="${tid}:${tpct}"
+            else
+              PER_TASK_TIMES="${PER_TASK_TIMES};${tid}:${tsecs}"
+              PER_TASK_PCTS="${PER_TASK_PCTS};${tid}:${tpct}"
+            fi
+          done
+        fi
+
+        # append CSV row (only the cmd is quoted)
+        printf '%s,%s,%s,%s,%d,%d,%s,%s,%s,%s,"%s"\n' \
+          "$TS" "$TASKS" "$PROG_N" "$ALGO" "$ATT" "$EXIT_CODE" "$TIME_STR" \
+          "$PER_TASK_TIMES" "$PER_TASK_PCTS" "$LOGFILE" "$CMD_STR" >> "$OUT_CSV"
 
       done
-
     done
   done
 done

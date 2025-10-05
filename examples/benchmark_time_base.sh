@@ -33,9 +33,9 @@ OUT_CSV="${RESULTS_DIR}/results_time_base_${SAFE_PROG}.csv"
 # TASKS to test
 TASKS_LIST=(2 4 8 16 32 64)
 
-# CSV header
+# CSV header (now includes per-task columns)
 if [ ! -f "$OUT_CSV" ]; then
-  printf '%s\n' "timestamp,tasks,exit_code,time_s,logfile,cmdline" > "$OUT_CSV"
+  printf '%s\n' "timestamp,tasks,exit_code,time_s,per_task_times_s,per_task_pct,logfile,cmdline" > "$OUT_CSV"
 fi
 
 for TASKS in "${TASKS_LIST[@]}"; do
@@ -51,16 +51,44 @@ for TASKS in "${TASKS_LIST[@]}"; do
     "${CMD[@]}" > "$LOGFILE" 2>&1
     EXIT_CODE=$?
 
-    # parse time from: 
+    # parse total time from:
     # Done. Time taken: XX.XXs
     TIME_STR=$(sed -n 's/.*Done\. Time taken: \([0-9][0-9]*\(\.[0-9][0-9]*\)\?\)s.*/\1/p' "$LOGFILE" | head -n1)
     if [ -z "$TIME_STR" ]; then
       TIME_STR="NA"
     fi
 
+    # parse per-task effective times & percentages:
+    # Task <id>: effective work time (excluding switches) = <seconds>s (<percent>% of total elapsed loop time)
+    # capture id, seconds, percent, then sort by id
+    mapfile -t TASK_LINES < <(sed -n 's/Task \([0-9][0-9]*\): effective work time (excluding switches) = \([0-9][0-9]*\(\.[0-9][0-9]*\)\?\)s (\([0-9][0-9]*\(\.[0-9][0-9]*\)\?\)% of total elapsed loop time).*/\1,\2,\4/p' "$LOGFILE" | sort -t, -k1,1n)
+
+    if [ "${#TASK_LINES[@]}" -eq 0 ]; then
+      PER_TASK_TIMES="NA"
+      PER_TASK_PCTS="NA"
+    else
+      PER_TASK_TIMES=""
+      PER_TASK_PCTS=""
+      for line in "${TASK_LINES[@]}"; do
+        IFS=, read -r tid tsecs tpct <<< "$line"
+        
+        # append entries in the form id:seconds and id:percent, separated by semicolons
+        if [ -z "$PER_TASK_TIMES" ] || [ "$PER_TASK_TIMES" = "" ]; then
+          PER_TASK_TIMES="${tid}:${tsecs}"
+          PER_TASK_PCTS="${tid}:${tpct}"
+        else
+          PER_TASK_TIMES="${PER_TASK_TIMES};${tid}:${tsecs}"
+          PER_TASK_PCTS="${PER_TASK_PCTS};${tid}:${tpct}"
+        fi
+      done
+    fi
+
     # serialize the full command line for traceability and append
     CMDLINE=$(printf '%s ' "${CMD[@]}")
-    printf '%s,%s,%d,%s,%s,"%s"\n' "$TS" "$TASKS" "$EXIT_CODE" "$TIME_STR" "$LOGFILE" "$CMDLINE" >> "$OUT_CSV"
+
+    # append CSV row with new per-task columns
+    printf '%s,%s,%d,%s,%s,%s,%s,"%s"\n' \
+      "$TS" "$TASKS" "$EXIT_CODE" "$TIME_STR" "$PER_TASK_TIMES" "$PER_TASK_PCTS" "$LOGFILE" "$CMDLINE" >> "$OUT_CSV"
   done
 done
 
