@@ -213,7 +213,7 @@ def plot_blocks(times, function_names, block_size=100, out_path="blocks.svg"):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Plot profiling events (JSON) as stacked iteration blocks.")
     parser.add_argument("--input", "-i", help="Profiler JSON input file (single file) OR path to directory with many .json files (use --input-dir instead for clarity)")
-    parser.add_argument("--input-dir", help="Directory containing JSON files (alternative to --input)")
+    parser.add_argument("--input-dir", default='./json', help="Directory containing JSON files (alternative to --input)")
     parser.add_argument("--dedup", action="store_true", help="Deduplicate identical events across files")
     parser.add_argument("--block_size", type=int, default=100, help="Iterations per block")
     parser.add_argument("--out", default="blocks.svg", help="Output image path")
