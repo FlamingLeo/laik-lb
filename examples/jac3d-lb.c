@@ -145,6 +145,7 @@ int main(int argc, char *argv[])
     bool do_visualization = false;
     bool do_sum = true;
     bool do_grid = false;
+    bool do_lb = true;
     Laik_LBAlgorithm algo = LB_HILBERT;
     int myid = laik_myid(world);
     int xblocks = 0, yblocks = 0, zblocks = 0; // for grid partitioner
@@ -167,6 +168,8 @@ int main(int argc, char *argv[])
             xblocks = atoi(argv[++arg]);
             do_grid = true;
         }
+        if (argv[arg][1] == 'L')
+            do_lb = false;
         if (argv[arg][1] == 'h')
         {
             if (myid == 0)
@@ -178,6 +181,7 @@ int main(int argc, char *argv[])
                        " -p        : export and visualize program trace as json files / collective svg'\n"
                        " -s        : print value sum at end (warning: sum done at master)\n"
                        " -v        : export and visualize partitioning borders at the end of the run\n"
+                       " -L        : disable load balancing\n"
                        " -h        : print this help text and exit with code 1\n",
                        argv[0]);
             exit(1);
@@ -231,7 +235,7 @@ int main(int argc, char *argv[])
             printf(" (grid %d x %d x %d)", zblocks, yblocks, xblocks);
         if (!use_cornerhalo)
             printf(" (halo without corners)");
-        printf("\nvisualization: %d, profiling: %d, sum: %d\n", do_visualization, do_profiling, do_sum);
+        printf("\nvisualization: %d, profiling: %d, sum: %d, load balancing: %d\n", do_visualization, do_profiling, do_sum, do_lb);
     }
 
     // start profiling interface
@@ -410,7 +414,8 @@ int main(int argc, char *argv[])
         } // end ranges / mappings loop
 
         work_time += laik_timer_stop(&work_timer); // stop and accumulate
-        LOAD_BALANCE(WL_LB_ITER);
+        if (do_lb)
+            LOAD_BALANCE(WL_LB_ITER);
 
         // check for residuum on proper iteration
         if (resCond)
