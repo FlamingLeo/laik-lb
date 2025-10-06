@@ -35,7 +35,7 @@ def savefig(fig, outpath):
 
 
 def line_plot_by_alg(df, ntasks_col, metric_col, outpath, ylabel=None, title=None, normalize_by_ntasks=False):
-    fig, ax = plt.subplots(figsize=(10, 6))
+    fig, ax = plt.subplots(figsize=(12, 6))
 
     has_freq = "prog_n" in df.columns
     mean_all = df.groupby(["algorithm", ntasks_col])[metric_col].mean().reset_index()
@@ -84,12 +84,9 @@ def line_plot_by_alg(df, ntasks_col, metric_col, outpath, ylabel=None, title=Non
             if len(x_vals) > 0:
                 ax.fill_between(x_vals, min_vals, max_vals, color=alg_colors[alg], alpha=0.12, linewidth=0)
 
-    if has_freq:
-        alg_handles, alg_labels = ax.get_legend_handles_labels()
-        leg1 = ax.legend(alg_handles, alg_labels, title="algorithm", loc="upper left")
-        ax.add_artist(leg1)
-    else:
-        ax.legend(title="algorithm")
+    alg_handles, alg_labels = ax.get_legend_handles_labels()
+    ax.legend(alg_handles, alg_labels, title="algorithm",
+            loc='upper left', bbox_to_anchor=(1.05, 1))
 
     ax.set_xlabel(ntasks_col)
     ax.set_ylabel(ylabel or metric_col)
@@ -114,7 +111,7 @@ def boxplot_by_alg_and_prog(df, metric, outpath, ylabel=None, title=None):
         if len(alg_groups) == 0:
             print(f"[boxplot] no data for metric {metric}")
             return
-        fig, ax = plt.subplots(figsize=(8, 5))
+        fig, ax = plt.subplots(figsize=(10, 5))
         ax.boxplot(alg_groups, labels=alg_names, showfliers=True)
         ax.set_xlabel("algorithm")
         ax.set_ylabel(ylabel or metric)
@@ -150,7 +147,7 @@ def boxplot_by_alg_and_prog(df, metric, outpath, ylabel=None, title=None):
         print(f"[boxplot] no data for metric {metric}")
         return
 
-    fig, ax = plt.subplots(figsize=(max(8, n_algs * 1.6), 6))
+    fig, ax = plt.subplots(figsize=(max(10, n_algs * 1.6), 6))
     bp = ax.boxplot([data_to_plot[i] for i in nonempty_idx],
                     positions=[positions[i] for i in nonempty_idx],
                     widths=box_width * 0.9,
@@ -185,8 +182,8 @@ def boxplot_by_alg_and_prog(df, metric, outpath, ylabel=None, title=None):
     #    ax.set_title(title)
 
     handles = [plt.Rectangle((0, 0), 1, 1, facecolor=prog_colors[p], alpha=0.75) for p in prog_vals]
-    labels = [f"prog={int(p)}" for p in prog_vals]
-    ax.legend(handles, labels, title="prog_n", loc="upper right")
+    labels = [f"n={int(p)}" for p in prog_vals]
+    ax.legend(handles, labels, title="load balancing frequency", loc='center left', bbox_to_anchor=(1, 0.5))
 
     savefig(fig, outpath)
 
