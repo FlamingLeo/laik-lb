@@ -223,7 +223,6 @@ static inline void build_cell_list()
 }
 
 // compute forces with linked cells
-// assumes ax/ay/az are zeroed before the call
 static inline double compute_forces_cells()
 {
     double potential = 0.0;
@@ -238,85 +237,88 @@ static inline double compute_forces_cells()
         az_thread[ii] = 0.0;
     }
 
-    // parallel over outer-most index
+    const int nc_xy = ncell_x * ncell_y;
+
+    // flattened loop over all cells
 #pragma omp parallel for reduction(+ : potential) schedule(dynamic)
-    for (int cz = 0; cz < ncell_z; ++cz)
+    for (int c = 0; c < ncell; ++c)
     {
+        int cz = c / nc_xy;
+        int rem = c % nc_xy;
+        int cy = rem / ncell_x;
+        int cx = rem % ncell_x;
+
         int tid = omp_get_thread_num();
         double *ax_t = ax_thread + (size_t)tid * (size_t)npart;
         double *ay_t = ay_thread + (size_t)tid * (size_t)npart;
         double *az_t = az_thread + (size_t)tid * (size_t)npart;
 
-        for (int cy = 0; cy < ncell_y; ++cy)
+        // iterate particles in cell c
+        for (int p = head[c]; p != -1; p = next[p])
         {
-            for (int cx = 0; cx < ncell_x; ++cx)
+            // neighbor cell offsets -1..1 in each dimension
+            for (int dzc = -1; dzc <= 1; ++dzc)
             {
-                int c = cx + cy * ncell_x + cz * (ncell_x * ncell_y);
-                for (int p = head[c]; p != -1; p = next[p])
+                int nz = cz + dzc;
+                if (nz < 0 || nz >= ncell_z)
+                    continue;
+                for (int dyc = -1; dyc <= 1; ++dyc)
                 {
-                    for (int dzc = -1; dzc <= 1; ++dzc)
+                    int ny = cy + dyc;
+                    if (ny < 0 || ny >= ncell_y)
+                        continue;
+                    for (int dxc = -1; dxc <= 1; ++dxc)
                     {
-                        int nz = cz + dzc;
-                        if (nz < 0 || nz >= ncell_z)
+                        int nx = cx + dxc;
+                        if (nx < 0 || nx >= ncell_x)
                             continue;
-                        for (int dyc = -1; dyc <= 1; ++dyc)
+
+                        int nc = nx + ny * ncell_x + nz * (ncell_x * ncell_y);
+
+                        for (int q = head[nc]; q != -1; q = next[q])
                         {
-                            int ny = cy + dyc;
-                            if (ny < 0 || ny >= ncell_y)
+                            if (q <= p)
+                                continue; // avoid double counting
+
+                            double dx = x[p] - x[q];
+                            double dy = y[p] - y[q];
+                            double dz = z[p] - z[q];
+                            double r2 = dx * dx + dy * dy + dz * dz;
+                            if (r2 <= 1e-12)
                                 continue;
-                            for (int dxc = -1; dxc <= 1; ++dxc)
+                            if (r2 <= cutoff2)
                             {
-                                int nx = cx + dxc;
-                                if (nx < 0 || nx >= ncell_x)
-                                    continue;
+                                double invr2 = 1.0 / r2;
+                                double invr6 = invr2 * invr2 * invr2;
+                                double sor6 = sigma6 * invr6;
+                                double sor12 = sor6 * sor6;
 
-                                int nc = nx + ny * ncell_x + nz * (ncell_x * ncell_y);
-                                for (int q = head[nc]; q != -1; q = next[q])
-                                {
-                                    if (q <= p)
-                                        continue; // avoid double counting
+                                double factor = 24.0 * EPSILON * (2.0 * sor12 - sor6) * invr2;
+                                double fx = factor * dx;
+                                double fy = factor * dy;
+                                double fz = factor * dz;
 
-                                    double dx = x[p] - x[q];
-                                    double dy = y[p] - y[q];
-                                    double dz = z[p] - z[q];
-                                    double r2 = dx * dx + dy * dy + dz * dz;
-                                    if (r2 <= 1e-12)
-                                        continue;
-                                    if (r2 <= cutoff2)
-                                    {
-                                        double invr2 = 1.0 / r2;
-                                        double invr6 = invr2 * invr2 * invr2;
-                                        double sor6 = sigma6 * invr6;
-                                        double sor12 = sor6 * sor6;
+                                double fx_m = fx / MASS;
+                                double fy_m = fy / MASS;
+                                double fz_m = fz / MASS;
 
-                                        double factor = 24.0 * EPSILON * (2.0 * sor12 - sor6) * invr2;
-                                        double fx = factor * dx;
-                                        double fy = factor * dy;
-                                        double fz = factor * dz;
+                                // accumulate to thread-local buffers
+                                ax_t[p] += fx_m;
+                                ay_t[p] += fy_m;
+                                az_t[p] += fz_m;
 
-                                        double fx_m = fx / MASS;
-                                        double fy_m = fy / MASS;
-                                        double fz_m = fz / MASS;
+                                ax_t[q] -= fx_m;
+                                ay_t[q] -= fy_m;
+                                az_t[q] -= fz_m;
 
-                                        // accumulate to thread-local buffers
-                                        ax_t[p] += fx_m;
-                                        ay_t[p] += fy_m;
-                                        az_t[p] += fz_m;
-
-                                        ax_t[q] -= fx_m;
-                                        ay_t[q] -= fy_m;
-                                        az_t[q] -= fz_m;
-
-                                        potential += 4.0 * EPSILON * (sor12 - sor6);
-                                    }
-                                } // q
-                            } // dxc
-                        } // dyc
-                    } // dzc
-                } // p
-            } // cx
-        } // cy
-    } // cz
+                                potential += 4.0 * EPSILON * (sor12 - sor6);
+                            }
+                        } // q
+                    } // dxc
+                } // dyc
+            } // dzc
+        } // p
+    } // c
 
     // reduce per-thread accumulators into globals
 #pragma omp parallel for schedule(static)
