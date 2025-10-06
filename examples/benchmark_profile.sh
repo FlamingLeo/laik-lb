@@ -65,4 +65,6 @@ for nt in "${NTASKS_LIST[@]}"; do
   done
 done
 
+mkdir -p lbviz/json
+
 echo "Done."
