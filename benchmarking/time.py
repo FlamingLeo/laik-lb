@@ -87,7 +87,7 @@ def build_groups(df):
 
 def plot_total_and_pertask(summary, out_dir):
     plt.close('all')
-    fig, ax = plt.subplots(figsize=(8,5))
+    fig, ax = plt.subplots(figsize=(12,5))
     tasks = summary['tasks'].values
 
     total_medians = []
@@ -108,16 +108,16 @@ def plot_total_and_pertask(summary, out_dir):
         pertask_maxs.append(np.nanmax(pertask_scalars))
 
     ax.fill_between(tasks, total_mins, total_maxs, alpha=0.10)
-    ax.plot(tasks, total_medians, marker='o', linestyle='-', label='total time (median across attempts)')
+    ax.plot(tasks, total_medians, marker='o', linestyle='-', label='total time (median)')
 
     ax.fill_between(tasks, pertask_mins, pertask_maxs, alpha=0.08)
-    ax.plot(tasks, pertask_medians, marker='s', linestyle='--', label='mean per-task time (median)')
+    ax.plot(tasks, pertask_medians, marker='s', linestyle='--', label='eff. work mean per-task time (median)')
 
     ax.set_xlabel('Number of tasks')
     ax.set_ylabel('Seconds (total and mean per-task)')
     #ax.set_title('Mean total time and mean per-task time vs tasks')
     ax.grid(True)
-    ax.legend()
+    ax.legend(loc='center left', bbox_to_anchor=(1.02, 0.5), borderaxespad=0)
     fig.tight_layout()
     path = os.path.join(out_dir, 'total_and_pertask_combined.svg')
     fig.savefig(path)
@@ -126,7 +126,7 @@ def plot_total_and_pertask(summary, out_dir):
 
 def plot_cv(summary, out_dir):
     plt.close('all')
-    fig, ax = plt.subplots(figsize=(8,5))
+    fig, ax = plt.subplots(figsize=(12,5))
     tasks = summary['tasks'].values
 
     cv_medians = []
@@ -139,13 +139,13 @@ def plot_cv(summary, out_dir):
         cv_maxs.append(np.nanmax(cvs))
 
     ax.fill_between(tasks, cv_mins, cv_maxs, alpha=0.12)
-    ax.plot(tasks, cv_medians, marker='o', linestyle='-', label='per-task CV (median)')
+    ax.plot(tasks, cv_medians, marker='o', linestyle='-', label='per-task work CV (median)')
 
     ax.set_xlabel('Number of tasks')
-    ax.set_ylabel('Per-task CV (std/mean)')
+    ax.set_ylabel('Eff. work per-task CV (std/mean)')
     #ax.set_title('Per-task imbalance (CV) vs tasks')
     ax.grid(True)
-    ax.legend()
+    ax.legend(loc='lower right', frameon=True)
     fig.tight_layout()
     path = os.path.join(out_dir, 'per_task_cv_combined.svg')
     fig.savefig(path)
@@ -169,8 +169,8 @@ def plot_small_multiples(summary, out_dir):
         arr = arr[:n_tasks]
         x = np.arange(len(arr))
         ax.bar(x, arr)
-        ax.set_xticks(x)
-        ax.set_xticklabels([str(t) for t in x], rotation=0)
+        ax.set_xticks(x[::max(1, len(x)//10)])
+        ax.set_xticklabels([str(t) for t in x[::max(1, len(x)//10)]], rotation=45, ha='right', fontsize=8)
         #ax.set_title(f'tasks={n_tasks}')
         ax.grid(axis='y', alpha=0.4)
         if c==0:

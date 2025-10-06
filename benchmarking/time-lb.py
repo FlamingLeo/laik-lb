@@ -4,6 +4,7 @@ import os
 import re
 import numpy as np
 import pandas as pd
+import matplotlib as mpl
 import matplotlib.pyplot as plt
 
 number_re = re.compile(r"(-?\d+(?:\.\d+)?)")
@@ -59,7 +60,7 @@ def build_summary(df):
 
 def plot_total_and_pertask(summary, out_dir):
     plt.close('all')
-    fig, ax = plt.subplots(figsize=(8,5))
+    fig, ax = plt.subplots(figsize=(12,5))
 
     algs = summary['algorithm'].unique()
     for alg in algs:
@@ -75,7 +76,7 @@ def plot_total_and_pertask(summary, out_dir):
 
         # shade for total mean
         ax.fill_between(tasks_sorted, min_vals_total, max_vals_total, alpha=0.10)
-        ax.plot(tasks_sorted, median_vals_total, marker='o', linestyle='-', label=f'{alg} total (median across prog_n)')
+        ax.plot(tasks_sorted, median_vals_total, marker='o', linestyle='-', label=f'{alg} total (median)')
 
         # pivot per-task mean scalar
         pivot_per_task = sel_alg.pivot(index='tasks', columns='prog_n', values='per_task_mean')
@@ -86,13 +87,14 @@ def plot_total_and_pertask(summary, out_dir):
 
         # shade for per-task mean
         ax.fill_between(tasks_sorted, min_vals_pt, max_vals_pt, alpha=0.08)
-        ax.plot(tasks_sorted, median_vals_pt, marker='s', linestyle='--', label=f'{alg} mean per-task (median)')
+        ax.plot(tasks_sorted, median_vals_pt, marker='s', linestyle='--', label=f'{alg} eff. work mean per-task (median)')
 
     ax.set_xlabel('Number of tasks')
     ax.set_ylabel('Seconds (total and mean per-task)')
     #ax.set_title('Mean total time and mean per-task time vs tasks')
     ax.grid(True)
-    ax.legend()
+    ax.legend(bbox_to_anchor=(1.02, 0.5), loc='center left', borderaxespad=0)
+    fig.subplots_adjust(right=0.78)
     fig.tight_layout()
     path = os.path.join(out_dir, 'total_and_pertask_combined.svg')
     fig.savefig(path)
@@ -106,7 +108,7 @@ def plot_cv(summary, out_dir):
     summary['per_task_mean'] = summary['mean_times_per_task'].apply(lambda arr: float(np.nanmean(arr)) if len(arr)>0 else float('nan'))
     summary['cv'] = summary['per_task_std'] / summary['per_task_mean']
 
-    fig, ax = plt.subplots(figsize=(8,5))
+    fig, ax = plt.subplots(figsize=(12,5))
     for alg in summary['algorithm'].unique():
         sel_alg = summary[summary['algorithm']==alg]
         pivot = sel_alg.pivot(index='tasks', columns='prog_n', values='cv')
@@ -116,13 +118,14 @@ def plot_cv(summary, out_dir):
         max_vals = np.nanmax(vals, axis=1)
         median_vals = np.nanmedian(vals, axis=1)
         ax.fill_between(tasks_sorted, min_vals, max_vals, alpha=0.12)
-        ax.plot(tasks_sorted, median_vals, marker='o', label=f'{alg} (median CV)')
+        ax.plot(tasks_sorted, median_vals, marker='o', label=f'{alg} (median work CV)')
 
     ax.set_xlabel('Number of tasks')
-    ax.set_ylabel('Per-task CV (std/mean)')
+    ax.set_ylabel('Eff. work per-task CV (std/mean)')
     #ax.set_title('Per-task imbalance (CV) vs tasks')
     ax.grid(True)
-    ax.legend()
+    ax.legend(bbox_to_anchor=(1.02, 0.5), loc='center left', borderaxespad=0)
+    fig.subplots_adjust(right=0.78)
     fig.tight_layout()
     path = os.path.join(out_dir, 'per_task_cv_combined.svg')
     fig.savefig(path)
@@ -130,41 +133,51 @@ def plot_cv(summary, out_dir):
 
 
 def plot_small_multiples(summary, out_dir):
-    algos = sorted(summary['algorithm'].unique())
-    prog_ns = sorted(summary['prog_n'].unique())
+    os.makedirs(out_dir, exist_ok=True)
+    algos = list(summary['algorithm'].unique())
+    prog_ns_all = np.sort(summary['prog_n'].unique())
+    norm = mpl.colors.Normalize(vmin=prog_ns_all.min(), vmax=prog_ns_all.max())
+    cmap = mpl.cm.get_cmap('winter')
+
     rows = len(algos)
-    cols = len(prog_ns)
-    fig, axes = plt.subplots(rows, cols, figsize=(4*cols, 3*rows), sharey='row')
-    if rows==1 and cols==1:
-        axes = np.array([[axes]])
-    elif rows==1:
-        axes = axes.reshape(1,-1)
-    elif cols==1:
-        axes = axes.reshape(-1,1)
+    fig, axes = plt.subplots(rows, 1, figsize=(10, 3*rows), sharex=True)
+    if rows == 1:
+        axes = [axes]
 
-    for i, alg in enumerate(algos):
-        for j, pn in enumerate(prog_ns):
-            ax = axes[i,j]
-            row = summary[(summary['algorithm']==alg)&(summary['prog_n']==pn)]
+    for ax, alg in zip(axes, algos):
+        sel_alg = summary[summary['algorithm'] == alg]
+        tasks_sorted = np.sort(sel_alg['tasks'].unique())
+
+        for pn in prog_ns_all:
+            row = sel_alg[sel_alg['prog_n'] == pn]
             if row.empty:
-                ax.set_visible(False)
                 continue
-            arr = np.array(row.iloc[0]['mean_times_per_task'])
-            n_tasks = int(row.iloc[0]['tasks'])
-            arr = arr[:n_tasks]
-            x = np.arange(n_tasks)
-            ax.bar(x, arr)
-            ax.set_xticks(x)
-            ax.set_xticklabels([str(t) for t in x], rotation=0)
-            #ax.set_title(f'{alg}  prog_n={pn}  tasks={n_tasks}')
-            ax.grid(axis='y', alpha=0.4)
-            if j==0:
-                ax.set_ylabel('Mean work time (s)')
+            by_tasks = row.groupby('tasks')['mean_time_s'].median().reindex(tasks_sorted)
+            ax.plot(tasks_sorted, by_tasks.values, color=cmap(norm(pn)), linewidth=1.2, alpha=0.7)
 
-    fig.tight_layout()
-    path = os.path.join(out_dir, 'per_task_small_multiples.svg')
-    fig.savefig(path)
+        pivot = sel_alg.pivot(index='tasks', columns='prog_n', values='mean_time_s')
+        medians = np.nanmedian(pivot.values, axis=1) if pivot.shape[0] > 0 else np.array([])
+        if medians.size > 0:
+            ax.plot(pivot.index, medians, color='black', linewidth=2.2, label='median')
+
+        ax.set_ylabel('Mean eff. work time (s)')
+        ax.set_title(f'Algorithm: {alg}')
+        ax.grid(alpha=0.25)
+
+    axes[-1].set_xlabel('Number of tasks')
+
+    sm = mpl.cm.ScalarMappable(cmap=cmap, norm=norm)
+    sm.set_array(np.linspace(prog_ns_all.min(), prog_ns_all.max(), 10))
+
+    fig.subplots_adjust(right=0.88)
+
+    cbar = fig.colorbar(sm, ax=axes, orientation='vertical', pad=0.02, fraction=0.02)
+    cbar.set_label('load balance frequency')
+
+    path = os.path.join(out_dir, 'tasks_algorithm_combined_lines.svg')
+    fig.savefig(path, bbox_inches='tight')
     print('Saved:', path)
+    plt.close(fig)
 
 
 def main():
