@@ -212,7 +212,7 @@ def load_extra_threads_csv(path):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('csv')
-    p.add_argument('--extra', help='Optional extra CSV (threads-based) to include', default=None)
+    p.add_argument('--extra', default=None)
     p.add_argument('--outdir', default='./output')
     p.add_argument('--show', action='store_true')
     args = p.parse_args()
