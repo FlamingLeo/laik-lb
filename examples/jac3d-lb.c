@@ -42,7 +42,7 @@
     {                                                                                                  \
         int64_t globFromX, globToX, globFromY, globToY, globFromZ, globToZ;                            \
         laik_my_range_3d(pWrite, r, &globFromX, &globToX, &globFromY, &globToY, &globFromZ, &globToZ); \
-        int itercount = ((globFromX + x) + (globFromY + y) + (globFromZ + z)) * 100;                   \
+        int itercount = ((globFromX + x) + (globFromY + y) + (globFromZ + z)) * 150;                   \
         volatile double sink = 0.0; /* volatile to prevent optimizing out */                           \
         for (int k = 0; k < itercount; ++k)                                                            \
             sink += baseR[z * zstrideR + y * ystrideR + x] * 0.0 + k * 1e-9;                           \
@@ -300,9 +300,13 @@ int main(int argc, char *argv[])
     int res_iters = 0; // iterations done with residuum calculation
 
     laik_svg_profiler_enter(inst, __func__);
+    Laik_Timer timer = {0};
+    Laik_Timer work_timer = {0};
+    double work_time = 0.0;
 
     // begin iterations
     int iter = 0;
+    laik_timer_start(&timer);
     for (; iter < maxiter; iter++)
     {
         laik_set_iteration(inst, iter + 1);
@@ -322,6 +326,8 @@ int main(int argc, char *argv[])
         //  switch to partitionings
         laik_switchto_partitioning(dRead, pRead, LAIK_DF_Preserve, LAIK_RO_None);
         laik_switchto_partitioning(dWrite, pWrite, LAIK_DF_None, LAIK_RO_None);
+
+        laik_timer_start(&work_timer);
 
         double vSum, vNew, diff, res = 0.0;
         double coeff = 1.0 / 6.0;
@@ -403,6 +409,7 @@ int main(int argc, char *argv[])
             }
         } // end ranges / mappings loop
 
+        work_time += laik_timer_stop(&work_timer); // stop and accumulate
         LOAD_BALANCE(WL_LB_ITER);
 
         // check for residuum on proper iteration
@@ -441,7 +448,9 @@ int main(int argc, char *argv[])
             if (res < .001)
                 break;
         } // end residual calculation
+        laik_timer_start(&work_timer);
     } // end iterations
+    double tfinal = laik_timer_stop(&timer);
 
     // statistics for all iterations and reductions
     // using work load in all tasks
@@ -480,6 +489,9 @@ int main(int argc, char *argv[])
         }
     }
 
+    if (myid == 0)
+        printf("Done. Time taken: %fs\n", tfinal);
+
     if (do_visualization)
     {
         if (myid == 0)
@@ -496,5 +508,10 @@ int main(int argc, char *argv[])
     laik_finalize(inst);
     if (do_profiling && myid == 0)
         laik_lbvis_save_trace();
+
+    // print effective work time
+    double pct = (tfinal > 0.0) ? (100.0 * work_time / tfinal) : 0.0;
+    printf("Task %d: effective work time (excluding switches) = %fs (%.2f%% of total elapsed loop time)\n", myid, work_time, pct);
+
     return 0;
 }
