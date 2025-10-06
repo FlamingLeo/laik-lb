@@ -120,7 +120,7 @@ def plot_total_and_pertask(summary, out_dir):
             # plot total median line with style according to source
             st = style_map.get(source, style_map['main'])
             ax.plot(tasks_sorted, median_vals_total, marker=st['marker'], linestyle=st['linestyle'],
-                    label=f'{alg} total (median) [{source}]', linewidth=st['linewidth'],
+                    label=f'{alg} total (median)', linewidth=st['linewidth'],
                     markersize=st['markersize'], alpha=st['alpha'], color=color)
 
             # pivot per-task mean scalar
@@ -141,7 +141,7 @@ def plot_total_and_pertask(summary, out_dir):
             per_task_marker = 'D' if source == 'main' else 'x'
             per_task_linestyle = (0, (5, 1)) if source == 'main' else (0, (1, 1))
             ax.plot(tasks_sorted, median_vals_pt, marker=per_task_marker, linestyle=per_task_linestyle,
-                    label=f'{alg} eff. work mean per-task (median) [{source}]',
+                    label=f'{alg} eff. work mean per-task (median)',
                     linewidth=st['linewidth'] * 0.9, markersize=st['markersize'], alpha=st['alpha'], color=color)
 
     ax.set_xlabel('Number of tasks')
@@ -193,7 +193,7 @@ def plot_cv(summary, out_dir):
             st = style_map.get(source, style_map['main'])
             ax.fill_between(tasks_sorted, min_vals, max_vals, alpha=0.12 if source == 'main' else 0.14, color=color)
             ax.plot(tasks_sorted, median_vals, marker=st['marker'], linestyle=st['linestyle'],
-                    label=f'{alg} (median work CV) [{source}]', linewidth=st['linewidth'],
+                    label=f'{alg} (median work CV)', linewidth=st['linewidth'],
                     markersize=st['markersize'], alpha=st['alpha'], color=color)
 
     ax.set_xlabel('Number of tasks')
