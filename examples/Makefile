@@ -12,14 +12,13 @@ OPT=-O3
 -include ../Makefile.config
 
 EXAMPLES = min vsum vsum2 spmv spmv2 \
-    jac1d jac1d-ser jac2d jac2d-ser jac2d-lb jac3d jac3d-lb test \
+    jac1d jac1d-ser jac2d jac2d-ser jac2d-lb jac3d jac3d-lb \
     lb lbpp markov-ser markov markov2 md md-lb md-ser md3d md3d-lb md3d-ser \
     propagation1d propagation2d \
     resize vsum3 \
     ping_pong \
     README-example \
     md2d_omp_simple md2d_omp_task md3d_omp_simple md3d_omp_task \
-    # test
 
 LDFLAGS = $(OPT) #$(ASANLDOPT)
 CFLAGS = $(OPT) $(WARN) $(DEFS) -std=gnu99 -I$(SDIR)../include
@@ -57,8 +56,6 @@ jac3d-lb: jac3d-lb.o -lm $(LAIKLIB)
 lb: lb.o -lm $(LAIKLIB)
 
 lbpp: lbpp.o -lm $(LAIKLIB)
-
-# test: test.o -lm $(LAIKLIB)
 
 markov: markov.o $(LAIKLIB)
 
