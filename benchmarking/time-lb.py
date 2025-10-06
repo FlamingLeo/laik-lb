@@ -68,6 +68,8 @@ def plot_total_and_pertask(summary, out_dir):
 
         # pivot total mean
         pivot_total = sel_alg.pivot(index='tasks', columns='prog_n', values='mean_time_s')
+        if pivot_total.empty:
+            continue
         tasks_sorted = list(pivot_total.index)
         vals_total = pivot_total.values
         min_vals_total = np.nanmin(vals_total, axis=1)
@@ -80,6 +82,11 @@ def plot_total_and_pertask(summary, out_dir):
 
         # pivot per-task mean scalar
         pivot_per_task = sel_alg.pivot(index='tasks', columns='prog_n', values='per_task_mean')
+
+        if pivot_per_task.empty or np.all(np.isnan(pivot_per_task.values)):
+            # nothing to plot for per-task for this algorithm
+            continue
+
         vals_pt = pivot_per_task.values
         min_vals_pt = np.nanmin(vals_pt, axis=1)
         max_vals_pt = np.nanmax(vals_pt, axis=1)
@@ -91,7 +98,6 @@ def plot_total_and_pertask(summary, out_dir):
 
     ax.set_xlabel('Number of tasks')
     ax.set_ylabel('Seconds (total and mean per-task)')
-    #ax.set_title('Mean total time and mean per-task time vs tasks')
     ax.grid(True)
     ax.legend(bbox_to_anchor=(1.02, 0.5), loc='center left', borderaxespad=0)
     fig.subplots_adjust(right=0.78)
@@ -112,6 +118,11 @@ def plot_cv(summary, out_dir):
     for alg in summary['algorithm'].unique():
         sel_alg = summary[summary['algorithm']==alg]
         pivot = sel_alg.pivot(index='tasks', columns='prog_n', values='cv')
+
+        # if there's no per-task CV data (empty or all-NaN), skip plotting this algorithm entirely
+        if pivot.empty or np.all(np.isnan(pivot.values)):
+            continue
+
         tasks_sorted = list(pivot.index)
         vals = pivot.values
         min_vals = np.nanmin(vals, axis=1)
@@ -122,7 +133,6 @@ def plot_cv(summary, out_dir):
 
     ax.set_xlabel('Number of tasks')
     ax.set_ylabel('Eff. work per-task CV (std/mean)')
-    #ax.set_title('Per-task imbalance (CV) vs tasks')
     ax.grid(True)
     ax.legend(bbox_to_anchor=(1.02, 0.5), loc='center left', borderaxespad=0)
     fig.subplots_adjust(right=0.78)
@@ -180,9 +190,29 @@ def plot_small_multiples(summary, out_dir):
     plt.close(fig)
 
 
+def load_extra_threads_csv(path):
+    df_e = pd.read_csv(path)
+
+    # keep only rows that have a numeric threads/time_s
+    df_e = df_e[~df_e['threads'].isna() & ~df_e['time_s'].isna()].copy()
+    df_e['tasks'] = df_e['threads'].astype(int)
+    df_e['prog_n'] = 0
+    df_e['algorithm'] = df_e['variant'].astype(str)
+    df_e['attempt'] = 1
+
+    # create the expected columns for parsing
+    df_e['per_task_times_s'] = ''
+    df_e['per_task_pct'] = ''
+
+    # select/rename relevant columns to match main CSV layout
+    df_e = df_e[['tasks','prog_n','algorithm','attempt','time_s','per_task_times_s','per_task_pct']]
+    return df_e
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('csv')
+    p.add_argument('--extra', help='Optional extra CSV (threads-based) to include', default=None)
     p.add_argument('--outdir', default='./output')
     p.add_argument('--show', action='store_true')
     args = p.parse_args()
@@ -190,7 +220,21 @@ def main():
     out_dir = args.outdir
     os.makedirs(out_dir, exist_ok=True)
 
+    # main CSV
     df = pd.read_csv(args.csv, dtype={'tasks': int, 'prog_n': int, 'algorithm': str, 'attempt': int})
+
+    # OMP CSV
+    if args.extra:
+        df_extra = load_extra_threads_csv(args.extra)
+        # make sure dtypes match
+        df_extra = df_extra.astype({
+            'tasks': int, 'prog_n': int, 'algorithm': str, 'attempt': int,
+            'time_s': float, 'per_task_times_s': str, 'per_task_pct': str
+        })
+        df = pd.concat([df, df_extra], ignore_index=True, sort=False)
+        print(f'Appended {len(df_extra)} rows from extra CSV: {args.extra}')
+
+    # parse the indexed-list fields into Python lists
     df['per_task_times_list'] = df['per_task_times_s'].apply(parse_indexed_list)
     df['per_task_pct_list'] = df['per_task_pct'].apply(parse_indexed_list)
 
