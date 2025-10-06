@@ -38,23 +38,38 @@ def parse_indexed_list(s):
 
 def build_summary(df):
     groups = []
-    for (tasks, prog_n, algorithm), g in df.groupby(['tasks','prog_n','algorithm']):
+
+    # style extra vs main differently
+    for (tasks, prog_n, algorithm, source), g in df.groupby(['tasks','prog_n','algorithm','source']):
         mean_time = float(g['time_s'].mean())
-        max_len = max(len(x) for x in g['per_task_times_list'].values)
-        times_arrays = np.vstack([np.pad(x, (0,max_len-len(x)), constant_values=np.nan) for x in g['per_task_times_list'].values])
-        pct_arrays = np.vstack([np.pad(x, (0,max_len-len(x)), constant_values=np.nan) for x in g['per_task_pct_list'].values])
-        mean_times_per_task = np.nanmean(times_arrays, axis=0)
-        mean_pct_per_task = np.nanmean(pct_arrays, axis=0)
-        truncated = mean_times_per_task[:int(tasks)] if len(mean_times_per_task)>0 else np.array([])
-        per_task_mean_scalar = float(np.nanmean(truncated)) if truncated.size>0 else float('nan')
+
+        # handle per-task arrays: some groups will have empty lists
+        max_len = 0
+        for x in g['per_task_times_list'].values:
+            if len(x) > max_len:
+                max_len = len(x)
+        if max_len == 0:
+            # create an empty array for consistency
+            times_arrays = np.empty((len(g), 0))
+            pct_arrays = np.empty((len(g), 0))
+        else:
+            times_arrays = np.vstack([np.pad(x, (0, max_len - len(x)), constant_values=np.nan) for x in g['per_task_times_list'].values])
+            pct_arrays = np.vstack([np.pad(x, (0, max_len - len(x)), constant_values=np.nan) for x in g['per_task_pct_list'].values])
+
+        mean_times_per_task = np.nanmean(times_arrays, axis=0) if times_arrays.size else np.array([])
+        mean_pct_per_task = np.nanmean(pct_arrays, axis=0) if pct_arrays.size else np.array([])
+
+        truncated = mean_times_per_task[:int(tasks)] if mean_times_per_task.size > 0 else np.array([])
+        per_task_mean_scalar = float(np.nanmean(truncated)) if truncated.size > 0 and not np.all(np.isnan(truncated)) else float('nan')
+
         groups.append({
-            'tasks': int(tasks), 'prog_n': int(prog_n), 'algorithm': algorithm,
+            'tasks': int(tasks), 'prog_n': int(prog_n), 'algorithm': algorithm, 'source': source,
             'mean_time_s': mean_time,
             'mean_times_per_task': mean_times_per_task,
             'mean_pct_per_task': mean_pct_per_task,
             'per_task_mean': per_task_mean_scalar
         })
-    summary = pd.DataFrame(groups).sort_values(['tasks','prog_n','algorithm']).reset_index(drop=True)
+    summary = pd.DataFrame(groups).sort_values(['tasks','prog_n','algorithm','source']).reset_index(drop=True)
     return summary
 
 
@@ -62,39 +77,72 @@ def plot_total_and_pertask(summary, out_dir):
     plt.close('all')
     fig, ax = plt.subplots(figsize=(12,5))
 
-    algs = summary['algorithm'].unique()
-    for alg in algs:
-        sel_alg = summary[summary['algorithm']==alg]
+    algorithms = summary['algorithm'].unique()
 
-        # pivot total mean
-        pivot_total = sel_alg.pivot(index='tasks', columns='prog_n', values='mean_time_s')
-        if pivot_total.empty:
-            continue
-        tasks_sorted = list(pivot_total.index)
-        vals_total = pivot_total.values
-        min_vals_total = np.nanmin(vals_total, axis=1)
-        max_vals_total = np.nanmax(vals_total, axis=1)
-        median_vals_total = np.nanmedian(vals_total, axis=1)
+    # style map per source
+    style_map = {
+        'main': {'linestyle': '-', 'marker': 'o', 'alpha': 0.95, 'linewidth': 1.8, 'markersize': 6},
+        'extra': {'linestyle': '--', 'marker': 's', 'alpha': 1.0, 'linewidth': 2.2, 'markersize': 6}
+    }
 
-        # shade for total mean
-        ax.fill_between(tasks_sorted, min_vals_total, max_vals_total, alpha=0.10)
-        ax.plot(tasks_sorted, median_vals_total, marker='o', linestyle='-', label=f'{alg} total (median)')
+    for alg in algorithms:
+        alg_summary = summary[summary['algorithm'] == alg]
 
-        # pivot per-task mean scalar
-        pivot_per_task = sel_alg.pivot(index='tasks', columns='prog_n', values='per_task_mean')
+        # get a color for this algorithm once and reuse for both sources
+        color = None
 
-        if pivot_per_task.empty or np.all(np.isnan(pivot_per_task.values)):
-            # nothing to plot for per-task for this algorithm
-            continue
+        # iterate sources in deterministic order
+        for source in ['main', 'extra']:
+            sel_alg = alg_summary[alg_summary['source'] == source]
+            if sel_alg.empty:
+                continue
 
-        vals_pt = pivot_per_task.values
-        min_vals_pt = np.nanmin(vals_pt, axis=1)
-        max_vals_pt = np.nanmax(vals_pt, axis=1)
-        median_vals_pt = np.nanmedian(vals_pt, axis=1)
+            # pivot total mean
+            pivot_total = sel_alg.pivot(index='tasks', columns='prog_n', values='mean_time_s')
+            if pivot_total.empty:
+                continue
+            tasks_sorted = list(pivot_total.index)
+            vals_total = pivot_total.values
+            min_vals_total = np.nanmin(vals_total, axis=1)
+            max_vals_total = np.nanmax(vals_total, axis=1)
+            median_vals_total = np.nanmedian(vals_total, axis=1)
 
-        # shade for per-task mean
-        ax.fill_between(tasks_sorted, min_vals_pt, max_vals_pt, alpha=0.08)
-        ax.plot(tasks_sorted, median_vals_pt, marker='s', linestyle='--', label=f'{alg} eff. work mean per-task (median)')
+            # choose color if unset
+            if color is None:
+                # draw a dummy invisible line to get the color cycle
+                ln = ax.plot(tasks_sorted, median_vals_total, visible=False)
+                color = ln[0].get_color()
+
+            # shade for total mean
+            alpha_shade = 0.10 if source == 'main' else 0.14
+            ax.fill_between(tasks_sorted, min_vals_total, max_vals_total, alpha=alpha_shade, color=color)
+
+            # plot total median line with style according to source
+            st = style_map.get(source, style_map['main'])
+            ax.plot(tasks_sorted, median_vals_total, marker=st['marker'], linestyle=st['linestyle'],
+                    label=f'{alg} total (median) [{source}]', linewidth=st['linewidth'],
+                    markersize=st['markersize'], alpha=st['alpha'], color=color)
+
+            # pivot per-task mean scalar
+            pivot_per_task = sel_alg.pivot(index='tasks', columns='prog_n', values='per_task_mean')
+            if pivot_per_task.empty or np.all(np.isnan(pivot_per_task.values)):
+                # skip per-task plotting for this
+                continue
+
+            vals_pt = pivot_per_task.values
+            min_vals_pt = np.nanmin(vals_pt, axis=1)
+            max_vals_pt = np.nanmax(vals_pt, axis=1)
+            median_vals_pt = np.nanmedian(vals_pt, axis=1)
+
+            # shade and line for per-task mean
+            alpha_shade_pt = 0.08 if source == 'main' else 0.10
+            ax.fill_between(tasks_sorted, min_vals_pt, max_vals_pt, alpha=alpha_shade_pt, color=color)
+            # use a different marker for per-task to make it distinct yet related
+            per_task_marker = 'D' if source == 'main' else 'x'
+            per_task_linestyle = (0, (5, 1)) if source == 'main' else (0, (1, 1))
+            ax.plot(tasks_sorted, median_vals_pt, marker=per_task_marker, linestyle=per_task_linestyle,
+                    label=f'{alg} eff. work mean per-task (median) [{source}]',
+                    linewidth=st['linewidth'] * 0.9, markersize=st['markersize'], alpha=st['alpha'], color=color)
 
     ax.set_xlabel('Number of tasks')
     ax.set_ylabel('Seconds (total and mean per-task)')
@@ -115,21 +163,38 @@ def plot_cv(summary, out_dir):
     summary['cv'] = summary['per_task_std'] / summary['per_task_mean']
 
     fig, ax = plt.subplots(figsize=(12,5))
+
+    style_map = {
+        'main': {'linestyle': '-', 'marker': 'o', 'alpha': 0.95, 'linewidth': 1.8, 'markersize': 6},
+        'extra': {'linestyle': '--', 'marker': 's', 'alpha': 1.0, 'linewidth': 2.2, 'markersize': 6}
+    }
+
     for alg in summary['algorithm'].unique():
-        sel_alg = summary[summary['algorithm']==alg]
-        pivot = sel_alg.pivot(index='tasks', columns='prog_n', values='cv')
+        alg_summary = summary[summary['algorithm'] == alg]
+        color = None
+        for source in ['main', 'extra']:
+            sel_alg = alg_summary[alg_summary['source'] == source]
+            if sel_alg.empty:
+                continue
+            pivot = sel_alg.pivot(index='tasks', columns='prog_n', values='cv')
+            if pivot.empty or np.all(np.isnan(pivot.values)):
+                continue
+            tasks_sorted = list(pivot.index)
+            vals = pivot.values
+            min_vals = np.nanmin(vals, axis=1)
+            max_vals = np.nanmax(vals, axis=1)
+            median_vals = np.nanmedian(vals, axis=1)
 
-        # if there's no per-task CV data (empty or all-NaN), skip plotting this algorithm entirely
-        if pivot.empty or np.all(np.isnan(pivot.values)):
-            continue
+            # choose color if unset
+            if color is None:
+                ln = ax.plot(tasks_sorted, median_vals, visible=False)
+                color = ln[0].get_color()
 
-        tasks_sorted = list(pivot.index)
-        vals = pivot.values
-        min_vals = np.nanmin(vals, axis=1)
-        max_vals = np.nanmax(vals, axis=1)
-        median_vals = np.nanmedian(vals, axis=1)
-        ax.fill_between(tasks_sorted, min_vals, max_vals, alpha=0.12)
-        ax.plot(tasks_sorted, median_vals, marker='o', label=f'{alg} (median work CV)')
+            st = style_map.get(source, style_map['main'])
+            ax.fill_between(tasks_sorted, min_vals, max_vals, alpha=0.12 if source == 'main' else 0.14, color=color)
+            ax.plot(tasks_sorted, median_vals, marker=st['marker'], linestyle=st['linestyle'],
+                    label=f'{alg} (median work CV) [{source}]', linewidth=st['linewidth'],
+                    markersize=st['markersize'], alpha=st['alpha'], color=color)
 
     ax.set_xlabel('Number of tasks')
     ax.set_ylabel('Eff. work per-task CV (std/mean)')
@@ -154,18 +219,34 @@ def plot_small_multiples(summary, out_dir):
     if rows == 1:
         axes = [axes]
 
+    style_map = {
+        'main': {'linestyle': '-', 'alpha': 0.85, 'linewidth': 1.6},
+        'extra': {'linestyle': '--', 'alpha': 1.0, 'linewidth': 2.0}
+    }
+
     for ax, alg in zip(axes, algos):
-        sel_alg = summary[summary['algorithm'] == alg]
-        tasks_sorted = np.sort(sel_alg['tasks'].unique())
+        sel_alg_all = summary[summary['algorithm'] == alg]
+        tasks_sorted = np.sort(sel_alg_all['tasks'].unique())
 
-        for pn in prog_ns_all:
-            row = sel_alg[sel_alg['prog_n'] == pn]
-            if row.empty:
+        # plot each source with same color map over prog_n but different linestyle/linewidth
+        for source in ['main', 'extra']:
+            sel_alg = sel_alg_all[sel_alg_all['source'] == source]
+            if sel_alg.empty:
                 continue
-            by_tasks = row.groupby('tasks')['mean_time_s'].median().reindex(tasks_sorted)
-            ax.plot(tasks_sorted, by_tasks.values, color=cmap(norm(pn)), linewidth=1.2, alpha=0.7)
+            norm = mpl.colors.Normalize(vmin=prog_ns_all.min(), vmax=prog_ns_all.max())
+            cmap = mpl.cm.get_cmap('winter')
+            st = style_map.get(source, style_map['main'])
+            for pn in prog_ns_all:
+                row = sel_alg[sel_alg['prog_n'] == pn]
+                if row.empty:
+                    continue
+                by_tasks = row.groupby('tasks')['mean_time_s'].median().reindex(tasks_sorted)
+                color = cmap(norm(pn))
+                ax.plot(tasks_sorted, by_tasks.values, color=color, linewidth=st['linewidth'], alpha=st['alpha'],
+                        linestyle=st['linestyle'])
 
-        pivot = sel_alg.pivot(index='tasks', columns='prog_n', values='mean_time_s')
+        # overall medians across prog_n (combining sources) drawn in black
+        pivot = sel_alg_all.pivot(index='tasks', columns='prog_n', values='mean_time_s')
         medians = np.nanmedian(pivot.values, axis=1) if pivot.shape[0] > 0 else np.array([])
         if medians.size > 0:
             ax.plot(pivot.index, medians, color='black', linewidth=2.2, label='median')
@@ -176,7 +257,7 @@ def plot_small_multiples(summary, out_dir):
 
     axes[-1].set_xlabel('Number of tasks')
 
-    sm = mpl.cm.ScalarMappable(cmap=cmap, norm=norm)
+    sm = mpl.cm.ScalarMappable(cmap=cmap, norm=mpl.colors.Normalize(vmin=prog_ns_all.min(), vmax=prog_ns_all.max()))
     sm.set_array(np.linspace(prog_ns_all.min(), prog_ns_all.max(), 10))
 
     fig.subplots_adjust(right=0.88)
@@ -203,16 +284,17 @@ def load_extra_threads_csv(path):
     # create the expected columns for parsing
     df_e['per_task_times_s'] = ''
     df_e['per_task_pct'] = ''
+    df_e['source'] = 'extra'
 
     # select/rename relevant columns to match main CSV layout
-    df_e = df_e[['tasks','prog_n','algorithm','attempt','time_s','per_task_times_s','per_task_pct']]
+    df_e = df_e[['tasks','prog_n','algorithm','attempt','time_s','per_task_times_s','per_task_pct','source']]
     return df_e
 
 
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('csv')
-    p.add_argument('--extra', default=None)
+    p.add_argument('--extra', help='Optional extra CSV (threads-based) to include', default=None)
     p.add_argument('--outdir', default='./output')
     p.add_argument('--show', action='store_true')
     args = p.parse_args()
@@ -222,14 +304,16 @@ def main():
 
     # main CSV
     df = pd.read_csv(args.csv, dtype={'tasks': int, 'prog_n': int, 'algorithm': str, 'attempt': int})
+    df['source'] = 'main'
 
-    # OMP CSV
+    # omp CSV
     if args.extra:
         df_extra = load_extra_threads_csv(args.extra)
+        
         # make sure dtypes match
         df_extra = df_extra.astype({
             'tasks': int, 'prog_n': int, 'algorithm': str, 'attempt': int,
-            'time_s': float, 'per_task_times_s': str, 'per_task_pct': str
+            'time_s': float, 'per_task_times_s': str, 'per_task_pct': str, 'source': str
         })
         df = pd.concat([df, df_extra], ignore_index=True, sort=False)
         print(f'Appended {len(df_extra)} rows from extra CSV: {args.extra}')
