@@ -173,8 +173,9 @@ int main(int argc, char *argv[])
         if (argv[arg][1] == 'h')
         {
             if (myid == 0)
-                printf("Usage: %s [options] <lb-algo> <side width> <maxiter>\n\n"
+                printf("Usage: %s [options]\n\n"
                        "Options:\n"
+                       " -a        : choose load balancing algorithm\n"
                        " -N        : use partitioner which does not include corners\n"
                        " -g        : use grid partitioning with automatic block size\n"
                        " -x <xgrid>: use grid partitioning with given x block length\n"
@@ -186,14 +187,16 @@ int main(int argc, char *argv[])
                        argv[0]);
             exit(1);
         }
+        if (argv[arg][1] == 'a' && argc > arg + 1)
+            algo = laik_strtolb(argv[++arg]);
         arg++;
     }
+    /*
     if (argc > arg)
-        algo = laik_strtolb(argv[arg]);
-    if (argc > arg + 1)
-        size = atoi(argv[arg + 1]);
-    if (argc > arg + 2)
-        maxiter = atoi(argv[arg + 2]);
+        size = atoi(argv[arg]);
+    if (argc > arg)
+        maxiter = atoi(argv[arg]);
+    */
 
     if (size == 0)
         size = SIZE;

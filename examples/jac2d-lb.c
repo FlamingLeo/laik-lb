@@ -146,8 +146,9 @@ int main(int argc, char *argv[])
         if (argv[arg][1] == 'h')
         {
             if (myid == 0)
-                printf("Usage: %s [options] <lb-algo> <side width> <maxiter> <repart>\n\n"
+                printf("Usage: %s [options]\n\n"
                        "Options:\n"
+                       " -a : choose load balancing algorithm\n"
                        " -N : use partitioner which does not include corners\n"
                        " -p : export and visualize program trace as json files / collective svg\n"
                        " -s : print value sum at end (warning: sum done at master)\n"
@@ -157,15 +158,17 @@ int main(int argc, char *argv[])
                        argv[0]);
             exit(1);
         }
+        if (argv[arg][1] == 'a' && argc > arg + 1)
+            algo = laik_strtolb(argv[++arg]);
         arg++;
     }
 
+    /*
     if (argc > arg)
-        algo = laik_strtolb(argv[arg]);
-    if (argc > arg + 1)
-        size = atoi(argv[arg + 1]);
-    if (argc > arg + 2)
-        maxiter = atoi(argv[arg + 2]);
+        size = atoi(argv[arg]);
+    if (argc > arg)
+        maxiter = atoi(argv[arg]);
+    */
 
     if (size == 0)
         size = SIZE; // size² entries
