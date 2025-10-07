@@ -153,7 +153,7 @@ int main(int argc, char *argv[])
     int arg = 1;
     while ((argc > arg) && (argv[arg][0] == '-'))
     {
-        if (argv[arg][1] == 'n')
+        if (argv[arg][1] == 'N')
             use_cornerhalo = false;
         if (argv[arg][1] == 'p')
             do_profiling = true;
@@ -175,7 +175,7 @@ int main(int argc, char *argv[])
             if (myid == 0)
                 printf("Usage: %s [options] <lb-algo> <side width> <maxiter>\n\n"
                        "Options:\n"
-                       " -n        : use partitioner which does not include corners\n"
+                       " -N        : use partitioner which does not include corners\n"
                        " -g        : use grid partitioning with automatic block size\n"
                        " -x <xgrid>: use grid partitioning with given x block length\n"
                        " -p        : export and visualize program trace as json files / collective svg'\n"
