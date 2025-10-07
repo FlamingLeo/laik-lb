@@ -7,7 +7,7 @@ COMMON_ARGS_ARRAY=("-o")
 LOG_DIR="./logs"
 RESULTS_DIR="results"
 TASKS_LIST=(2 4 8 16 32 64)
-PROG_N_LIST=(100 250 500 1000)
+PROG_N_LIST=(1)
 ALGO_LIST=(rcb rcbincr hilbert gilbert)
 REPEATS=2
 
@@ -51,7 +51,7 @@ for TASKS in "${TASKS_LIST[@]}"; do
         # build the command array
         CMD_ARR=( "$MPIRUN_BIN" -n "$TASKS" "$PROGRAM" )
         for a in "${COMMON_ARGS_ARRAY[@]}"; do CMD_ARR+=( "$a" ); done
-        CMD_ARR+=( -n "$PROG_N" -a "$ALGO" )
+        CMD_ARR+=( -a "$ALGO" )
 
         # printable command string (trim trailing space)
         CMD_STR="$(printf '%q ' "${CMD_ARR[@]}")"

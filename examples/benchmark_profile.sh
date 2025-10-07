@@ -6,7 +6,7 @@ set -o pipefail
 PROGNAME="${1:-md-lb}"
 NTASKS_LIST=(2 4 8 16 32 64)
 ALGOS=(rcb rcbincr hilbert gilbert)
-FREQS=(100 250 500 1000)
+FREQS=(1)
 
 # make a unique destination name if it already exists
 unique_name() {
@@ -37,7 +37,7 @@ for nt in "${NTASKS_LIST[@]}"; do
       echo "Command: mpirun -n ${nt} ./${PROGNAME} -o -p -a ${algo} -n ${freq}"
       
       # run mpirun
-      if mpirun -n "${nt}" ./"${PROGNAME}" -o -p -a "${algo}" -n "${freq}"; then
+      if mpirun -n "${nt}" ./"${PROGNAME}" -o -p -a "${algo}"; then
         echo "Run finished (exit code 0)."
       else
         echo "Run FAILED (non-zero exit). Continuing to next combo." >&2

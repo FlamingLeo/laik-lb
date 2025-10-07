@@ -14,7 +14,7 @@ PROG = sys.argv[1]
 PROG_NAME = Path(PROG).stem
 
 NTASKS_list = [2, 4, 8, 16, 32, 64]
-FREQ_list = [100, 250, 500, 1000]
+FREQ_list = [1]
 ALGO_list = ["rcb", "rcbincr", "hilbert", "gilbert"]
 
 pattern = re.compile(
@@ -34,7 +34,7 @@ with open(output_file, "w", newline="") as csvfile:
 
     for NTASKS, FREQ, ALGO in product(NTASKS_list, FREQ_list, ALGO_list):
         print(f"Running NTASKS={NTASKS}, FREQ={FREQ}, ALGO={ALGO}...")
-        cmd = ["mpirun", "-n", str(NTASKS), f"./{PROG}", "-n", str(FREQ), "-a", ALGO, "-o", "-l"]
+        cmd = ["mpirun", "-n", str(NTASKS), f"./{PROG}", "-a", ALGO, "-o", "-l"]
 
         log_file = logs_dir / f"ntasks{NTASKS}_freq{FREQ}_algo{ALGO}.log"
 

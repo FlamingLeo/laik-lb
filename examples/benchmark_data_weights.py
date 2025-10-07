@@ -7,7 +7,7 @@ import re
 import sys
 
 NTASKS_LIST = [2, 4, 8, 16, 32, 64]
-FREQ_LIST = [100, 250, 500, 1000]
+FREQ_LIST = [1]
 ALGO_LIST = ["rcb", "rcbincr", "hilbert", "gilbert"]
 
 # unit conversion
@@ -149,7 +149,7 @@ def parse_weights_pair(line1, line2):
     return parsed
 
 def run_and_collect(prog_path, ntasks, freq, algo):
-    cmd = ["mpirun", "-n", str(ntasks), prog_path, "-n", str(freq), "-a", algo, "-o"]
+    cmd = ["mpirun", "-n", str(ntasks), prog_path, "-a", algo, "-o"]
     env = os.environ.copy()
     env["LAIK_LOG"] = "2"
     print(f"Running: LAIK_LOG=2 {' '.join(cmd)}")
