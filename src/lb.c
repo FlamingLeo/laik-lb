@@ -93,7 +93,7 @@ static void *safe_malloc(size_t n)
 // calculate the difference between the minimum and maximum of the times taken by each task and the mean
 //
 // this is used for determining whether to start or stop load balancing
-static void min_max_mean(double *times, int gsize, double *maxdt, double *mean)
+static void min_max_mean(double *times, int gsize, double *maxdt, double *maxt, double *mean)
 {
     double min = times[0], max = times[0], sum = times[0];
     for (int64_t i = 1; i < gsize; i++)
@@ -106,12 +106,14 @@ static void min_max_mean(double *times, int gsize, double *maxdt, double *mean)
     }
     if (maxdt)
         *maxdt = max - min;
+    if (maxt)
+        *maxt = max;
     if (mean)
         *mean = sum / (double)gsize;
 }
 
 // print information since last rebalance
-static void print_times(double *times, int gsize, double maxdt, double mean)
+static void print_times(double *times, int gsize, double maxdt, double max, double mean)
 {
     printf("[LAIK-LB] times in s for this segment: [");
     for (int i = 0; i < gsize; ++i)
@@ -120,7 +122,7 @@ static void print_times(double *times, int gsize, double maxdt, double mean)
         if (i < gsize - 1)
             printf(", ");
     }
-    printf("], max dt: %.2f, mean %.2f, rel. imbalance %.2f (stopped: %d)\n", maxdt, mean, maxdt / mean, stopped);
+    printf("], max dt: %.2f, mean %.2f, rel. imbalance %.2f (stopped: %d)\n", maxdt, mean, (max / mean) - 1, stopped);
 }
 
 // check if a number is a power of 2
@@ -1983,7 +1985,7 @@ Laik_Partitioner *laik_new_incr_rcb_partitioner(double *weights)
 ////////////////////
 
 // calculate the imbalance to determine whether or not load balancing should be done
-// formula: (max - min) / mean
+// formula: (max - mean) / mean = (max / mean) - 1
 static double get_imbalance(Laik_Partitioning *p, double ttime)
 {
     static int lastgsize = -1;
@@ -2048,18 +2050,18 @@ static double get_imbalance(Laik_Partitioning *p, double ttime)
     laik_log_flush("\n");
 
     // calculate maximum time difference
-    double maxdt, mean;
-    min_max_mean(times, gsize, &maxdt, &mean);
+    double maxdt, max, mean;
+    min_max_mean(times, gsize, &maxdt, &max, &mean);
 
-    laik_log(1, "lb/get_imbalance: maxdt %f, mean %f\n", maxdt, mean);
+    laik_log(1, "lb/get_imbalance: maxdt %f, max: %f, mean %f\n", maxdt, max, mean);
 
     // print time taken by each task
     if (task == 0 && do_print_times)
-        print_times(times, gsize, maxdt, mean);
+        print_times(times, gsize, maxdt, max, mean);
 
     // return relative threshold ((max - min) / mean)
     laik_svg_profiler_exit(inst, __func__);
-    return maxdt / mean;
+    return (max / mean) - 1;
 }
 
 // initialize the weight array for the current load balancing run
