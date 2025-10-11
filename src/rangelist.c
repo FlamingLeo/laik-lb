@@ -164,7 +164,7 @@ Laik_TaskRange* laik_rangelist_tidrange(Laik_RangeList* list, int tid, int n)
 //#define DEBUG_COVERSPACE 1
 
 // TODO: use dynamic list
-#define COVERLIST_MAX 100
+#define COVERLIST_MAX 256
 static Laik_Range notcovered[COVERLIST_MAX];
 static int notcovered_count;
 
