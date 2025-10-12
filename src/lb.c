@@ -2427,6 +2427,7 @@ void laik_lb_config_smoothing(bool smoothing, double am, double rmi, double rma)
     if (rma > 0.0)
         rmax = rma;
 
+    assert(rmin < rmax);
     laik_log(1, "lb/do_smoothing: smoothing ENABLED: alpha=%f, rmin=%f, rmax=%f\n", alpha_mul, rmin, rmax);
 }
 
