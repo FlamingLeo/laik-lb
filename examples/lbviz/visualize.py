@@ -9,9 +9,18 @@ import sys
 from datetime import datetime
 
 import numpy as np
+import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import matplotlib.colors as mcolors
+
+matplotlib.use("pgf")
+matplotlib.rcParams.update({
+    "pgf.texsystem": "pdflatex",
+    'font.family': 'serif',
+    'text.usetex': True,
+    'pgf.rcfonts': False,
+})
 
 # 1. load file, then convert csv rows with ranges to numpy array
 def load_array_from_csv_ranges(filename):
@@ -127,15 +136,21 @@ def visualize_array_as_image(array,
         disp = np.vectorize(lambda v: val_to_idx[int(v)])(img)
         boundaries = np.arange(-0.5, N + 0.5, 1.0)
         norm = mcolors.BoundaryNorm(boundaries, N)
-        plt.imshow(disp,
-                   origin='lower',
-                   extent=[-0.5, W - 0.5, -0.5, H - 0.5],
-                   interpolation='nearest',
-                   aspect='auto',
-                   cmap=cmap_obj,
-                   norm=norm)
+
+        plt.figure(figsize=(8, 0.5))
+        plt.imshow(
+            disp,
+            origin='lower',
+            extent=[-0.5, W - 0.5, -0.5, 0.5],
+            interpolation='nearest',
+            aspect='auto',
+            cmap=cmap_obj,
+            norm=norm
+        )
+
         plt.gca().set_yticks([])
         plt.ylabel('')
+        plt.xlabel('index')
 
     elif ndim == 2:
         # 2d first dim->y second->x (transpose for imshow so x is horizontal)
@@ -202,7 +217,7 @@ def visualize_array_as_image(array,
     # save to file with current timestamp
     if out_filename is None:
         timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-        out_filename = f'plot_{timestamp}.png'
+        out_filename = f'plot_{timestamp}.pgf'
     plt.savefig(out_filename, bbox_inches='tight')
     plt.close()
 
@@ -229,7 +244,7 @@ def main():
     base_dir = os.path.dirname(filename)
     base_name = os.path.splitext(os.path.basename(filename))[0]
     timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-    out_filename = os.path.join(base_dir, f'plot_{timestamp}.png')
+    out_filename = os.path.join(base_dir, f'plot_{timestamp}.pgf')
 
     visualize_array_as_image(array, out_filename=out_filename)
     print(f'saved plot to: {out_filename}')
