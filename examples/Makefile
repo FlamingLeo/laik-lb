@@ -13,7 +13,7 @@ OPT=-O3
 
 EXAMPLES = min vsum vsum2 spmv spmv2 \
     jac1d jac1d-ser jac2d jac2d-ser jac2d-lb jac3d jac3d-lb \
-    lb lbpp markov-ser markov markov2 md md-lb md-ser md3d md3d-lb md3d-ser \
+    lb lbsmooth lbpp markov-ser markov markov2 md md-lb md-ser md3d md3d-lb md3d-ser \
     propagation1d propagation2d \
     resize vsum3 \
     ping_pong \
@@ -54,6 +54,8 @@ jac3d: jac3d.o $(LAIKLIB)
 jac3d-lb: jac3d-lb.o -lm $(LAIKLIB)
 
 lb: lb.o -lm $(LAIKLIB)
+
+lbsmooth: lbsmooth.o -lm $(LAIKLIB)
 
 lbpp: lbpp.o -lm $(LAIKLIB)
 

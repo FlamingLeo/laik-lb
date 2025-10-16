@@ -8,14 +8,8 @@
 #include <string.h>
 #include <unistd.h>
 
-#define CSVNAME "array_data_lb.csv"
-
-////////////////////////
-// iteration examples //
-////////////////////////
-
 // 2d example
-int main_2d(int argc, char *argv[], int64_t sdsize, int lcount, Laik_LBAlgorithm lbalg, bool do_visualization)
+int main_2d(int argc, char *argv[], int64_t sdsize, int lcount, Laik_LBAlgorithm lbalg, bool smoothing, bool suspend, bool intelligent)
 {
     // initialization
     Laik_Instance *inst = laik_init(&argc, &argv);
@@ -25,14 +19,16 @@ int main_2d(int argc, char *argv[], int64_t sdsize, int lcount, Laik_LBAlgorithm
     laik_lbvis_enable_trace(id, inst);
     laik_svg_profiler_enter(inst, __func__);
 
-    // laik_lb_config_smoothing(1, -1, -1, -1);
+    // for basic smoothing only, start with smoothing immediately
+    if (smoothing && !intelligent)
+        laik_lb_config_smoothing(1, -1, -1, -1);
 
     if (id == 0)
     {
-        printf("Running 2D example with %d iterations.\n", lcount);
+        printf("Running smoothing test example with %d iterations.\n", lcount);
         printf("Space size %ldx%ld = %ld.\n", sdsize, sdsize, sdsize * sdsize);
         printf("Using LB algorithm: %s\n", laik_get_lb_algorithm_name(lbalg));
-        printf("Visualisation: %d\n", do_visualization);
+        printf("Smoothing: %d, Suspend: %d, Intelligent: %d\n", smoothing, suspend, intelligent);
     }
 
     Laik_Space *space = laik_new_space_2d(inst, sdsize, sdsize);
@@ -40,9 +36,6 @@ int main_2d(int argc, char *argv[], int64_t sdsize, int lcount, Laik_LBAlgorithm
     Laik_Partitioner *parter = laik_new_bisection_partitioner();
     Laik_Partitioning *part = laik_new_partitioning(parter, world, space, 0);
     laik_switchto_partitioning(data, part, LAIK_DF_None, LAIK_RO_None);
-
-    int iterations = (id + 1) * 10;
-    double c = (512.0 / (double)sdsize) * (512.0 / (double)sdsize) * 0.5; // sleep time constant multiplier (def. max: ~1.31s)
 
     Laik_Timer t = {0};
     laik_timer_start(&t);
@@ -53,18 +46,42 @@ int main_2d(int argc, char *argv[], int64_t sdsize, int lcount, Laik_LBAlgorithm
         laik_log(1, "%d ranges\n", laik_my_rangecount(part));
         laik_lb_balance(START_LB_SEGMENT, 0, 0);
 
-        // if (id == 0 && loop == 4) sleep(1);
-
-        for (int iter = 0; iter < iterations; ++iter)
+        // for intelligent mode, only activate smoothing after a certain number of iterations
+        if (smoothing && intelligent)
         {
-            uint64_t sleepdur = 0;
-            for (int r = 0; r < laik_my_rangecount(part); ++r)
+            if (loop == 2)
+                laik_lb_config_smoothing(1, -1, -1, -1);
+            if (loop == 5)
+                laik_lb_config_smoothing(1, 0.5, 0.001, 9999);
+                laik_lb_config_thresholds(5,-1,-1,-1);
+            if (loop == 7)
+                laik_lb_config_smoothing(1, -1, -1, -1);
+        }
+
+        // suspend execution of first proc. only for 5th iter
+        if (suspend)
+            if (id == 0 && loop == 4)
+                sleep(2);
+
+        // cause some imbalance
+        for (int r = 0; r < laik_my_rangecount(part); ++r)
+        {
+            uint64_t ysize, xsize;
+            laik_get_map_2d(data, r, NULL, &ysize, NULL, &xsize);
+
+            int64_t globFromX, globToX, globFromY, globToY;
+            laik_my_range_2d(part, r, &globFromX, &globToX, &globFromY, &globToY);
+
+            for (int64_t y = 0; y < ysize; ++y)
             {
-                int64_t from_x, from_y, to_x, to_y;
-                laik_my_range_2d(part, r, &from_x, &to_x, &from_y, &to_y);
-                sleepdur += (to_x - from_x) * (to_y - from_y);
+                for (int64_t x = 0; x < xsize; ++x)
+                {
+                    int itercount = ((globFromX + x) + (globFromY + y)) * 4;
+                    volatile double sink = 0.0;
+                    for (int k = 0; k < itercount; ++k)
+                        sink += 1;
+                }
             }
-            usleep((uint64_t)((double)sleepdur * c));
         }
 
         // calculate and switch to new partitioning determined by load balancing algorithm
@@ -75,17 +92,6 @@ int main_2d(int argc, char *argv[], int64_t sdsize, int lcount, Laik_LBAlgorithm
     double time = laik_timer_stop(&t);
     if (id == 0)
         printf("Done. Time taken: %fs\n", time);
-
-    // visualize task ranges
-    if (do_visualization)
-    {
-        if (id == 0)
-        {
-            Laik_RangeList *lr = laik_partitioning_myranges(part);
-            laik_lbvis_export_partitioning(CSVNAME, lr);
-            laik_lbvis_visualize_partitioning(CSVNAME);
-        }
-    }
 
     // done
     laik_svg_profiler_exit(inst, __func__);
@@ -106,19 +112,56 @@ int main(int argc, char *argv[])
 
     // optional space size and loop count arguments
     int64_t sidelen = 0;
-    char *algo = NULL;
-    bool do_visualization = false;
-    int lcount = 15; // loop count, increase this to test thresholds
-    if (argc > 2)
-        do_visualization = atoi(argv[2]);
-    if (argc > 3)
-        algo = argv[3];
-    if (argc > 4)
-        sidelen = atoi(argv[4]);
-    if (argc > 5)
-        lcount = atoi(argv[5]);
+    Laik_LBAlgorithm algo = LB_RCB;
+    bool smoothing = true, suspend = true, intelligent = true;
+    int lcount = 10; // loop count, increase this to test thresholds
+
+    int arg = 1;
+    while ((argc > arg) && (argv[arg][0] == '-'))
+    {
+        // choose lb algorithm
+        if (arg + 1 < argc && !strcmp(argv[arg], "-a"))
+            algo = laik_strtolb(argv[++arg]);
+
+        // choose side length
+        if (arg + 1 < argc && !strcmp(argv[arg], "-s"))
+            sidelen = atoi(argv[++arg]);
+
+        // choose loop count
+        if (arg + 1 < argc && !strcmp(argv[arg], "-l"))
+            lcount = atoi(argv[++arg]);
+
+        // do not use intelligent mode
+        if (!strcmp(argv[arg], "-i"))
+            intelligent = false;
+
+        // do not apply smoothing
+        if (!strcmp(argv[arg], "-S"))
+            smoothing = false;
+
+        // do not suspend execution
+        if (!strcmp(argv[arg], "-p"))
+            suspend = false;
+
+        // help
+        if (argv[arg][1] == 'h')
+        {
+            printf("Usage: %s [options]\n\n"
+                   "Options:\n"
+                   " -a : choose load balancing algorithm (default: rcb)\n"
+                   " -s : choose side length (default: 1024)\n"
+                   " -S : do not apply smoothing\n"
+                   " -i : do not use intelligent smoothing\n"
+                   " -p : do not suspend execution\n"
+                   " -l : choose loop count (defaullt: 10)\n"
+                   " -h : print this help text and exit with code 1\n",
+                   argv[0]);
+            exit(1);
+        }
+        arg++;
+    }
 
     if (sidelen == 0)
         sidelen = 1024;
-    main_2d(argc, argv, sidelen, lcount, algo ? laik_strtolb(algo) : LB_HILBERT, do_visualization);
+    main_2d(argc, argv, sidelen, lcount, algo, smoothing, suspend, intelligent);
 }

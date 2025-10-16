@@ -136,9 +136,6 @@ int main(int argc, char *argv[])
     Laik_Partitioning *part = laik_new_partitioning(parter, world, lbspace, 0);
     laik_switchto_partitioning(lbdata, part, LAIK_DF_None, LAIK_RO_None);
 
-    int iterations = (myid + 1) * 10;
-    double c = (512.0 / (double)sdsize) * (512.0 / (double)sdsize) * 0.5;
-
     // run the ping-pong between pairs, using our custom partitioner
     Laik_Partitioner *pr0, *pr1;
     Laik_Partitioning *p0, *p1;
@@ -171,16 +168,24 @@ int main(int argc, char *argv[])
 
         // CUSTOM: LB
         // laik_lb_balance(it % lbevery == 0 ? START_LB_SEGMENT : RESUME_LB_SEGMENT, 0, 0);
-        for (int iter = 0; iter < iterations; ++iter)
+        for (int r = 0; r < laik_my_rangecount(part); ++r)
         {
-            uint64_t sleepdur = 0;
-            for (int r = 0; r < laik_my_rangecount(part); ++r)
+            uint64_t ysize, xsize;
+            laik_get_map_2d(lbdata, r, NULL, &ysize, NULL, &xsize);
+
+            int64_t globFromX, globToX, globFromY, globToY;
+            laik_my_range_2d(part, r, &globFromX, &globToX, &globFromY, &globToY);
+
+            for (int64_t y = 0; y < ysize; ++y)
             {
-                int64_t from_x, from_y, to_x, to_y;
-                laik_my_range_2d(part, r, &from_x, &to_x, &from_y, &to_y);
-                sleepdur += (to_x - from_x) * (to_y - from_y);
+                for (int64_t x = 0; x < xsize; ++x)
+                {
+                    int itercount = ((globFromX + x) + (globFromY + y)) * 4;
+                    volatile double sink = 0.0;
+                    for (int k = 0; k < itercount; ++k)
+                        sink += 1;
+                }
             }
-            usleep((uint64_t)((double)sleepdur * c));
         }
 
         // calculate and switch to new partitioning determined by load balancing algorithm
