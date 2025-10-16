@@ -25,6 +25,7 @@ jac3d
 jac3d-lb
 lb
 lbpp
+lbsmooth
 test
 markov-ser
 markov
