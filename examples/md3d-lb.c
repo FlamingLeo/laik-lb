@@ -541,9 +541,20 @@ int main(int argc, char **argv)
     double switch_time = 0.0;
     double lbm_time = 0.0;
 
+    Laik_LBDataStats before_w = {0};
+    Laik_LBDataStats before_r = {0};
+    Laik_LBDataStats after_w = {0};
+    Laik_LBDataStats after_r = {0};
+
     laik_timer_start(&timer);
     for (long step = 0; step < nsteps; ++step)
     {
+        if (step % lbevery == 0)
+        {
+            laik_lb_stats_store(&before_w, data_head_w);
+            laik_lb_stats_store(&before_r, data_head_r);
+        }
+
         laik_svg_profiler_mark_iteration(inst, step);
 
         laik_svg_profiler_enter(inst, "switch");
@@ -894,6 +905,14 @@ int main(int argc, char **argv)
         }
         laik_svg_profiler_exit(inst, "work");
         work_time += laik_timer_stop(&work_timer); // stop and accumulate
+
+        if (step % lbevery == (lbevery - 1))
+        {
+            laik_lb_stats_store(&after_w, data_head_w);
+            laik_lb_stats_store(&after_r, data_head_r);
+            laik_lb_print_diff(myid, data_head_w, &after_w, &before_w);
+            laik_lb_print_diff(myid, data_head_r, &after_r, &before_r);
+        }
     }
     double tfinal = laik_timer_stop(&timer);
 
