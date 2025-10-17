@@ -2509,7 +2509,8 @@ void laik_lb_switch_and_free(Laik_Partitioning **part, Laik_Partitioning **npart
     br += br_diff;
 
     // print diffs for current segment
-    printf("[LAIK-LB] T%d, %s: mc %d, mb %ld, fc %d, fb %ld, bs %ld, br %ld\n", id, data->name, mc_diff, mb_diff, fc_diff, fb_diff, bs_diff, br_diff);
+    if (do_print_times)
+        printf("[LAIK-LB] T%d, %s: mc %d, mb %ld, fc %d, fb %ld, bs %ld, br %ld\n", id, data->name, mc_diff, mb_diff, fc_diff, fb_diff, bs_diff, br_diff);
 
     // free old partitioning and update pointers
     laik_free_partitioning(*part);
@@ -2564,6 +2565,9 @@ void laik_lb_config_thresholds(int pstop, int pstart, double tstop, double tstar
 
 void laik_lb_print_stats(int id)
 {
-    printf("[LAIK-LB] T%d: mc %d, mb %ld, fc %d, fb %ld, bs %ld, br %ld\n", id, mc, mb, fc, fb, bs, br);
-    printf("[LAIK-LB] T%d: num. allocs: %d, bytes alloced: %ld, num. frees: %d, bytes freed: %ld, max concurrent: %ld\n", id, imalloc_count, imalloc_bytes, ifree_count, ifree_bytes, max_concurrently_allocated);
+    if (do_print_times)
+    {
+        printf("[LAIK-LB] T%d: mc %d, mb %ld, fc %d, fb %ld, bs %ld, br %ld\n", id, mc, mb, fc, fb, bs, br);
+        printf("[LAIK-LB] T%d: num. allocs: %d, bytes alloced: %ld, num. frees: %d, bytes freed: %ld, max concurrent: %ld\n", id, imalloc_count, imalloc_bytes, ifree_count, ifree_bytes, max_concurrently_allocated);
+    }
 }
