@@ -88,13 +88,6 @@ static size_t ifree_bytes = 0;   // load-balancing specific free bytes    (s_mal
 static size_t currently_allocated = 0;
 static size_t max_concurrently_allocated = 0;
 
-static int mc;      // malloc count
-static uint64_t mb; // malloc bytes
-static int fc;      // freed count
-static uint64_t fb; // freed bytes
-static uint64_t bs; // bytes sent
-static uint64_t br; // bytes received
-
 /////////////
 // utility //
 /////////////
@@ -2471,52 +2464,10 @@ void laik_lb_switch_and_free(Laik_Partitioning **part, Laik_Partitioning **npart
 
     Laik_Instance *inst = (*part)->group->inst;
     laik_svg_profiler_enter(inst, __func__);
-
-    // register old statistics
-    int id = laik_myid((*part)->group);
-    int mc_before = data->stat->mallocCount;        // malloc count
-    uint64_t mb_before = data->stat->mallocedBytes; // malloc bytes
-    int fc_before = data->stat->freeCount;          // freed count
-    uint64_t fb_before = data->stat->freedBytes;    // freed bytes
-    uint64_t bs_before = data->stat->byteSendCount; // bytes sent
-    uint64_t br_before = data->stat->byteRecvCount; // bytes received
-
-    // transfer data
     laik_switchto_partitioning(data, *npart, flow, LAIK_RO_None);
-
-    // register new statistics
-    int mc_after = data->stat->mallocCount;
-    uint64_t mb_after = data->stat->mallocedBytes;
-    int fc_after = data->stat->freeCount;
-    uint64_t fb_after = data->stat->freedBytes;
-    uint64_t bs_after = data->stat->byteSendCount;
-    uint64_t br_after = data->stat->byteRecvCount;
-
-    // calculate diffs
-    int mc_diff = mc_after - mc_before;
-    uint64_t mb_diff = mb_after - mb_before;
-    int fc_diff = fc_after - fc_before;
-    uint64_t fb_diff = fb_after - fb_before;
-    uint64_t bs_diff = bs_after - bs_before;
-    uint64_t br_diff = br_after - br_before;
-
-    // add diff to global total stats
-    mc += mc_diff;
-    mb += mb_diff;
-    fc += fc_diff;
-    fb += fb_diff;
-    bs += bs_diff;
-    br += br_diff;
-
-    // print diffs for current segment
-    if (do_print_times)
-        printf("[LAIK-LB] T%d, %s: mc %d, mb %ld, fc %d, fb %ld, bs %ld, br %ld\n", id, data->name, mc_diff, mb_diff, fc_diff, fb_diff, bs_diff, br_diff);
-
-    // free old partitioning and update pointers
     laik_free_partitioning(*part);
     *part = *npart;
     *npart = NULL;
-
     laik_svg_profiler_exit(inst, __func__);
 }
 
@@ -2566,10 +2517,7 @@ void laik_lb_config_thresholds(int pstop, int pstart, double tstop, double tstar
 void laik_lb_print_stats(int id)
 {
     if (do_print_times)
-    {
-        printf("[LAIK-LB] T%d: mc %d, mb %ld, fc %d, fb %ld, bs %ld, br %ld\n", id, mc, mb, fc, fb, bs, br);
         printf("[LAIK-LB] T%d: num. allocs: %d, bytes alloced: %ld, num. frees: %d, bytes freed: %ld, max concurrent: %ld\n", id, imalloc_count, imalloc_bytes, ifree_count, ifree_bytes, max_concurrently_allocated);
-    }
 }
 
 void laik_lb_add_malloc(size_t size)
@@ -2585,4 +2533,29 @@ void laik_lb_add_free(size_t size)
     ifree_count++;
     ifree_bytes += size;
     currently_allocated -= size;
+}
+
+void laik_lb_stats_store(Laik_LBDataStats *stats, Laik_Data *data)
+{
+    stats->mc = data->stat->mallocCount;   // malloc count
+    stats->mb = data->stat->mallocedBytes; // malloc bytes
+    stats->fc = data->stat->freeCount;     // freed count
+    stats->fb = data->stat->freedBytes;    // freed bytes
+    stats->bs = data->stat->byteSendCount; // bytes sent
+    stats->br = data->stat->byteRecvCount; // bytes received
+}
+
+void laik_lb_print_diff(int id, Laik_Data *data, Laik_LBDataStats *s1, Laik_LBDataStats *s2)
+{
+    if (do_print_times)
+    {
+        int mc_diff = s1->mc - s2->mc;
+        uint64_t mb_diff = s1->mb - s2->mb;
+        int fc_diff = s1->fc - s2->fc;
+        uint64_t fb_diff = s1->fb - s2->fb;
+        uint64_t bs_diff = s1->bs - s2->bs;
+        uint64_t br_diff = s1->br - s2->br;
+
+        printf("[LAIK-LB] T%d, %s, %d: mc %d, mb %ld, fc %d, fb %ld, bs %ld, br %ld\n", id, data->name, segment, mc_diff, mb_diff, fc_diff, fb_diff, bs_diff, br_diff);
+    }
 }

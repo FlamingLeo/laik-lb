@@ -55,10 +55,22 @@
     /* npRead: pointer to new read partition based on new write partition borders */ \
     if ((_iter == 0) || (iter < _iter))                                              \
     {                                                                                \
+        laik_timer_start(&lbm_timer);                                                \
         npWrite = laik_lb_balance(STOP_LB_SEGMENT, pWrite, algo);                    \
         npRead = laik_new_partitioning(prRead, world, space, npWrite);               \
+        Laik_LBDataStats before_w = {0};                                             \
+        Laik_LBDataStats before_r = {0};                                             \
+        laik_lb_stats_store(&before_w, dWrite);                                      \
+        laik_lb_stats_store(&before_r, dRead);                                       \
         laik_lb_switch_and_free(&pWrite, &npWrite, dWrite, LAIK_DF_Preserve);        \
         laik_lb_switch_and_free(&pRead, &npRead, dRead, LAIK_DF_None);               \
+        Laik_LBDataStats after_w = {0};                                              \
+        Laik_LBDataStats after_r = {0};                                              \
+        laik_lb_stats_store(&after_w, dWrite);                                       \
+        laik_lb_stats_store(&after_r, dRead);                                        \
+        laik_lb_print_diff(myid, dWrite, &after_w, &before_w);                       \
+        laik_lb_print_diff(myid, dRead, &after_r, &before_r);                        \
+        lbm_time += laik_timer_stop(&lbm_timer);                                     \
     }
 #else
 #define DO_WORKLOAD(_iter) (void)0;
@@ -309,6 +321,10 @@ int main(int argc, char *argv[])
     laik_svg_profiler_enter(inst, __func__);
     Laik_Timer timer = {0};
     Laik_Timer work_timer = {0};
+    Laik_Timer switch_timer = {0};
+    Laik_Timer lbm_timer = {0};
+    double switch_time = 0.0;
+    double lbm_time = 0.0;
     double work_time = 0.0;
 
     // begin iterations
@@ -330,11 +346,18 @@ int main(int argc, char *argv[])
             dWrite = data2;
         }
 
+        if (iter < WL_LB_ITER)
+            laik_timer_start(&switch_timer);
+
         //  switch to partitionings
         laik_switchto_partitioning(dRead, pRead, LAIK_DF_Preserve, LAIK_RO_None);
         laik_switchto_partitioning(dWrite, pWrite, LAIK_DF_None, LAIK_RO_None);
 
-        laik_timer_start(&work_timer);
+        if (iter < WL_LB_ITER)
+            switch_time += laik_timer_stop(&switch_timer);
+
+        if (iter < WL_LB_ITER)
+            laik_timer_start(&work_timer);
 
         double vSum, vNew, diff, res = 0.0;
         double coeff = 1.0 / 6.0;
@@ -416,7 +439,9 @@ int main(int argc, char *argv[])
             }
         } // end ranges / mappings loop
 
-        work_time += laik_timer_stop(&work_timer); // stop and accumulate
+        if (iter < WL_LB_ITER)
+            work_time += laik_timer_stop(&work_timer); // stop and accumulate
+
         if (do_lb)
             LOAD_BALANCE(WL_LB_ITER);
 
@@ -519,9 +544,8 @@ int main(int argc, char *argv[])
 
     laik_lb_print_stats(myid);
 
-    // print effective work time
-    double pct = (tfinal > 0.0) ? (100.0 * work_time / tfinal) : 0.0;
-    printf("Task %d: effective work time (excluding switches) = %fs (%.2f%% of total elapsed loop time)\n", myid, work_time, pct);
+    // print individual times
+    printf("Task %d: work time = %fs, switch time = %fs, load balancer time = %fs\n", myid, work_time, switch_time, lbm_time);
 
     return 0;
 }

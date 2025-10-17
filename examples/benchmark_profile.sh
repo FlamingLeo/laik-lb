@@ -6,7 +6,7 @@ set -o pipefail
 PROGNAME="${1:-md-lb}"
 NTASKS_LIST=(2 4 8 16 32 64)
 ALGOS=(rcb rcbincr hilbert gilbert)
-FREQS=(1)
+FREQS=(150)
 
 # make a unique destination name if it already exists
 unique_name() {
