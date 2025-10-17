@@ -100,4 +100,7 @@ void laik_lb_config_smoothing(bool smoothing, double am, double rmi, double rma)
 // configure start/stop parameters (-1: leave default)
 void laik_lb_config_thresholds(int pstop, int pstart, double tstop, double tstart);
 
+// print data statistics
+void laik_lb_print_stats(int id);
+
 #endif

@@ -517,6 +517,8 @@ int main(int argc, char *argv[])
     if (do_profiling && myid == 0)
         laik_lbvis_save_trace();
 
+    laik_lb_print_stats(myid);
+
     // print effective work time
     double pct = (tfinal > 0.0) ? (100.0 * work_time / tfinal) : 0.0;
     printf("Task %d: effective work time (excluding switches) = %fs (%.2f%% of total elapsed loop time)\n", myid, work_time, pct);

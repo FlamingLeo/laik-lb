@@ -9,6 +9,7 @@
 
 #define IDX2D(x, y) ((y) * width + (x))
 #define IDX3D(x, y, z) ((x) + width * ((y) + height * (z)))
+#define MAX(x, y) (((x) > (y)) ? (x) : (y))
 
 // helper lookup table for fast log2 for powers of 2
 static const int log2_tab[64] = {
@@ -74,6 +75,26 @@ static double alpha_mul = 0.15;   // smoothing factor in multiplicative domain (
 static double rmin = 0.7;         // minimum allowed multiplicative change per step
 static double rmax = 1.25;        // maximum allowed multiplicative change per step
 
+////////////////
+// statistics // (current proc)
+////////////////
+
+static size_t weight_alloc = 0; // helper for checking how large the weight array (+ prev weights) is
+
+static int imalloc_count = 0;    // load-balancing specific malloc counts (s_malloc uses)
+static size_t imalloc_bytes = 0; // load-balancing specific malloc bytes  (s_malloc param)
+static int ifree_count = 0;      // load-balancing specific free counts   (s_malloc uses)
+static size_t ifree_bytes = 0;   // load-balancing specific free bytes    (s_malloc param)
+static size_t currently_allocated = 0;
+static size_t max_concurrently_allocated = 0;
+
+static int mc;      // malloc count
+static uint64_t mb; // malloc bytes
+static int fc;      // freed count
+static uint64_t fb; // freed bytes
+static uint64_t bs; // bytes sent
+static uint64_t br; // bytes received
+
 /////////////
 // utility //
 /////////////
@@ -87,7 +108,20 @@ static void *safe_malloc(size_t n)
         laik_panic("Could not allocate enough memory!");
         exit(EXIT_FAILURE);
     }
+    imalloc_count++;
+    imalloc_bytes += n;
+    currently_allocated += n;
+    max_concurrently_allocated = MAX(max_concurrently_allocated, currently_allocated);
     return p;
+}
+
+// trace free calls
+static void stat_free(void *p, size_t n)
+{
+    free(p);
+    ifree_count++;
+    ifree_bytes += n;
+    currently_allocated -= n;
 }
 
 // calculate the difference between the minimum and maximum of the times taken by each task and the mean
@@ -237,7 +271,7 @@ static void rcb_sl_clear()
     while (cur)
     {
         LB_RCB_SBL *next = cur->next;
-        free(cur);
+        stat_free(cur, sizeof(LB_RCB_SBL));
         cur = next;
     }
     sbl_parents = NULL;
@@ -303,16 +337,16 @@ static void swlist_free(LB_SpaceWeightList *head)
     {
         temp = head->next;
         if (head->weights)
-            free(head->weights);
+            stat_free(head->weights, weight_alloc);
         if (head->prev_weights)
-            free(head->prev_weights);
+            stat_free(head->prev_weights, weight_alloc);
         if (head->weightpart)
             laik_free_partitioning(head->weightpart);
         if (head->weightspace)
             laik_free_space(head->weightspace);
         if (head->weightdata)
             laik_free(head->weightdata); // not actually implemented behind the scenes but it'll be correct
-        free(head);
+        stat_free(head, sizeof(LB_SpaceWeightList));
         head = temp;
     }
 }
@@ -532,26 +566,65 @@ static void merge_cuboids_then_add_ranges(int *grid1D, int64_t width, int64_t he
                 size_t need = (size_t)rem_d * (size_t)rem_h;
                 if (need > buf_capacity)
                 {
-                    // allocate at least depth*height to amortize allocations
+                    // allocate at least depth * height to amortize allocations
                     size_t new_cap = (size_t)depth * (size_t)height;
                     if (new_cap < need)
                         new_cap = need;
-                    int64_t *tmp = (int64_t *)realloc(w_layer, new_cap * sizeof(int64_t));
+                    size_t new_bytes = new_cap * sizeof(int64_t);
+
+                    // account old sizes based on actual pointers
+                    size_t old_w_bytes = w_layer ? buf_capacity * sizeof(int64_t) : 0;
+                    int64_t *tmp = (int64_t *)realloc(w_layer, new_bytes);
                     if (!tmp)
                     {
-                        // allocation fails, fallback
+                        // allocation fails
                         goto fallback_single_cell;
                     }
+
+                    // realloc for w_layer
+                    if (old_w_bytes > 0)
+                    {
+                        ifree_count++;
+                        ifree_bytes += old_w_bytes;
+                        currently_allocated -= old_w_bytes;
+                    }
+                    imalloc_count++;
+                    imalloc_bytes += new_bytes;
+                    currently_allocated += new_bytes;
+                    max_concurrently_allocated = MAX(max_concurrently_allocated, currently_allocated);
                     w_layer = tmp;
-                    int64_t *tmp2 = (int64_t *)realloc(min_w_h, new_cap * sizeof(int64_t));
+
+                    // realloc min_w_h
+                    size_t old_min_bytes = min_w_h ? buf_capacity * sizeof(int64_t) : 0;
+                    int64_t *tmp2 = (int64_t *)realloc(min_w_h, new_bytes);
                     if (!tmp2)
                     {
-                        // allocation fails, fallback
+                        // allocation fails
                         free(w_layer);
+                        if (new_bytes > 0)
+                        {
+                            ifree_count++;
+                            ifree_bytes += new_bytes;
+                            currently_allocated -= new_bytes;
+                        }
                         w_layer = NULL;
                         goto fallback_single_cell;
                     }
+
+                    // realloc for min_w_h
+                    if (old_min_bytes > 0)
+                    {
+                        ifree_count++;
+                        ifree_bytes += old_min_bytes;
+                        currently_allocated -= old_min_bytes;
+                    }
+                    imalloc_count++;
+                    imalloc_bytes += new_bytes;
+                    currently_allocated += new_bytes;
+                    max_concurrently_allocated = MAX(max_concurrently_allocated, currently_allocated);
                     min_w_h = tmp2;
+
+                    // update capacity only after both succeed
                     buf_capacity = new_cap;
                 }
 
@@ -662,8 +735,8 @@ static void merge_cuboids_then_add_ranges(int *grid1D, int64_t width, int64_t he
         }
     }
 
-    free(w_layer);
-    free(min_w_h);
+    stat_free(w_layer, buf_capacity * sizeof(int64_t));
+    stat_free(min_w_h, buf_capacity * sizeof(int64_t));
 
     laik_svg_profiler_exit(inst, __func__);
 }
@@ -1338,7 +1411,7 @@ static void sfc_2d(Laik_RangeReceiver *r, Laik_PartitionerParams *p, double *wei
     merge_rects_then_add_ranges(idxGrid, size_x, size_y, r, tidcount);
 
     // free remaining memory
-    free(idxGrid);
+    stat_free(idxGrid, N * sizeof(int));
 
     laik_svg_profiler_exit(inst, __func__);
 }
@@ -1433,7 +1506,7 @@ static void sfc_3d(Laik_RangeReceiver *r, Laik_PartitionerParams *p, double *wei
     merge_cuboids_then_add_ranges(idxGrid, size_x, size_y, size_z, r, tidcount);
 
     // free remaining memory
-    free(idxGrid);
+    stat_free(idxGrid, N * sizeof(int));
 
     laik_svg_profiler_exit(inst, __func__);
 }
@@ -1451,7 +1524,7 @@ void runSFCPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams *p)
     LB_SFC_Data *data = (LB_SFC_Data *)p->partitioner->data;
     double *weights = data->weights;
     Laik_LBAlgorithm algo = data->algo;
-    free(data); // not needed anymore
+    stat_free(data, sizeof(LB_SFC_Data)); // not needed anymore
 
     if (dims == 2)
         sfc_2d(r, p, weights, algo);
@@ -2087,7 +2160,10 @@ static double *init_weights(Laik_Partitioning *p, double ttime)
     if (!ext_weights)
     {
         if (!swl->weights)
+        {
             swl->weights = (double *)safe_malloc(size * sizeof(double));
+            weight_alloc = size * sizeof(double);
+        }
 
         memset(swl->weights, 0, size * sizeof(double));
 
@@ -2396,7 +2472,46 @@ void laik_lb_switch_and_free(Laik_Partitioning **part, Laik_Partitioning **npart
     Laik_Instance *inst = (*part)->group->inst;
     laik_svg_profiler_enter(inst, __func__);
 
+    // register old statistics
+    int id = laik_myid((*part)->group);
+    int mc_before = data->stat->mallocCount;        // malloc count
+    uint64_t mb_before = data->stat->mallocedBytes; // malloc bytes
+    int fc_before = data->stat->freeCount;          // freed count
+    uint64_t fb_before = data->stat->freedBytes;    // freed bytes
+    uint64_t bs_before = data->stat->byteSendCount; // bytes sent
+    uint64_t br_before = data->stat->byteRecvCount; // bytes received
+
+    // transfer data
     laik_switchto_partitioning(data, *npart, flow, LAIK_RO_None);
+
+    // register new statistics
+    int mc_after = data->stat->mallocCount;
+    uint64_t mb_after = data->stat->mallocedBytes;
+    int fc_after = data->stat->freeCount;
+    uint64_t fb_after = data->stat->freedBytes;
+    uint64_t bs_after = data->stat->byteSendCount;
+    uint64_t br_after = data->stat->byteRecvCount;
+
+    // calculate diffs
+    int mc_diff = mc_after - mc_before;
+    uint64_t mb_diff = mb_after - mb_before;
+    int fc_diff = fc_after - fc_before;
+    uint64_t fb_diff = fb_after - fb_before;
+    uint64_t bs_diff = bs_after - bs_before;
+    uint64_t br_diff = br_after - br_before;
+
+    // add diff to global total stats
+    mc += mc_diff;
+    mb += mb_diff;
+    fc += fc_diff;
+    fb += fb_diff;
+    bs += bs_diff;
+    br += br_diff;
+
+    // print diffs for current segment
+    printf("[LAIK-LB] T%d, %s: mc %d, mb %ld, fc %d, fb %ld, bs %ld, br %ld\n", id, data->name, mc_diff, mb_diff, fc_diff, fb_diff, bs_diff, br_diff);
+
+    // free old partitioning and update pointers
     laik_free_partitioning(*part);
     *part = *npart;
     *npart = NULL;
@@ -2445,4 +2560,10 @@ void laik_lb_config_thresholds(int pstop, int pstart, double tstop, double tstar
 
     assert(t_stop < t_start); // also in main lb, just another sanity check here
     laik_log(1, "lb/config: configured start/stop parameters: p_stop=%d, p_start=%d, t_stop=%f, t_start=%f\n", p_stop, p_start, t_stop, t_start);
+}
+
+void laik_lb_print_stats(int id)
+{
+    printf("[LAIK-LB] T%d: mc %d, mb %ld, fc %d, fb %ld, bs %ld, br %ld\n", id, mc, mb, fc, fb, bs, br);
+    printf("[LAIK-LB] T%d: num. allocs: %d, bytes alloced: %ld, num. frees: %d, bytes freed: %ld, max concurrent: %ld\n", id, imalloc_count, imalloc_bytes, ifree_count, ifree_bytes, max_concurrently_allocated);
 }
