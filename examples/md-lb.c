@@ -458,7 +458,11 @@ int main(int argc, char **argv)
 
     // accumulate time spent in work regions (exclude switch/communication)
     Laik_Timer work_timer = {0};
+    Laik_Timer switch_timer = {0};
+    Laik_Timer lbm_timer = {0};
     double work_time = 0.0;
+    double switch_time = 0.0;
+    double lbm_time = 0.0;
 
     laik_timer_start(&timer);
     for (long step = 0; step < nsteps; ++step)
@@ -466,10 +470,12 @@ int main(int argc, char **argv)
         laik_svg_profiler_mark_iteration(inst, step);
 
         laik_svg_profiler_enter(inst, "switch");
+        laik_timer_start(&switch_timer);
         laik_switchto_partitioning(data_x, particle_space_partitioning, LAIK_DF_Preserve, LAIK_RO_None);
         laik_switchto_partitioning(data_y, particle_space_partitioning, LAIK_DF_Preserve, LAIK_RO_None);
         laik_switchto_partitioning(data_ax, particle_space_partitioning, LAIK_DF_Preserve, LAIK_RO_None);
         laik_switchto_partitioning(data_ay, particle_space_partitioning, LAIK_DF_Preserve, LAIK_RO_None);
+        switch_time += laik_timer_stop(&switch_timer);
         laik_svg_profiler_exit(inst, "switch");
 
         // count is all the same here (identical partitioning)
@@ -497,6 +503,7 @@ int main(int argc, char **argv)
 
         // distribute relevant data for acceleration calculation to all tasks
         laik_svg_profiler_enter(inst, "switch");
+        laik_timer_start(&switch_timer);
         laik_switchto_partitioning(data_x, particle_space_partitioning_all, LAIK_DF_Preserve, LAIK_RO_None);
         laik_switchto_partitioning(data_y, particle_space_partitioning_all, LAIK_DF_Preserve, LAIK_RO_None);
         laik_switchto_partitioning(data_ax, particle_space_partitioning_all, LAIK_DF_Preserve, LAIK_RO_None);
@@ -506,6 +513,7 @@ int main(int argc, char **argv)
         laik_switchto_partitioning(data_head_w, cell_partitioning_master, LAIK_DF_None, LAIK_RO_None);
         laik_switchto_partitioning(data_head_r, cell_partitioning_master, LAIK_DF_None, LAIK_RO_None);
         laik_switchto_partitioning(data_next, particle_space_partitioning_master, LAIK_DF_None, LAIK_RO_None);
+        switch_time += laik_timer_stop(&switch_timer);
         laik_svg_profiler_exit(inst, "switch");
 
         laik_svg_profiler_enter(inst, "work");
@@ -544,22 +552,25 @@ int main(int argc, char **argv)
         work_time += laik_timer_stop(&work_timer); // stop and accumulate
 
         // partition initialized cell list across all tasks
-        laik_svg_profiler_enter(inst, "switch");
         if (cell_partitioning_w != cpw_new)
         {
+            laik_timer_start(&lbm_timer);
             laik_lb_switch_and_free(&cell_partitioning_w, &cpw_new, data_head_w, LAIK_DF_Preserve);
             laik_lb_switch_and_free(&cell_partitioning_r, &cpr_new, data_head_r, LAIK_DF_Preserve);
             cpw_new = cell_partitioning_w;
             cpr_new = cell_partitioning_r;
+            lbm_time += laik_timer_stop(&lbm_timer);
         }
         else
         {
+            laik_svg_profiler_enter(inst, "switch");
+            laik_timer_start(&switch_timer);
             laik_switchto_partitioning(data_head_w, cell_partitioning_w, LAIK_DF_Preserve, LAIK_DF_None);
             laik_switchto_partitioning(data_head_r, cell_partitioning_r, LAIK_DF_Preserve, LAIK_DF_None);
+            switch_time += laik_timer_stop(&switch_timer);
+            laik_svg_profiler_exit(inst, "switch");
         }
         laik_switchto_partitioning(data_next, particle_space_partitioning_all, LAIK_DF_Preserve, LAIK_DF_None);
-        laik_svg_profiler_exit(inst, "switch");
-
         // all   : x,y,ax,ay
         // bisect: cell head W/R (halo)
         laik_svg_profiler_enter(inst, "work");
@@ -694,6 +705,7 @@ int main(int argc, char **argv)
         work_time += laik_timer_stop(&work_timer); // stop and accumulate
 
         // stop load balancing, use custom weights and adjust partitioning pointers
+        laik_timer_start(&lbm_timer);
         if ((step % lbevery == (lbevery - 1)))
         {
             laik_lb_set_ext_weights(weights);
@@ -703,17 +715,20 @@ int main(int argc, char **argv)
         }
         else
             laik_lb_balance(PAUSE_LB_SEGMENT, 0, 0);
+        lbm_time += laik_timer_stop(&lbm_timer);
 
         // aggregate forces for velocity calc
         // NOTE: this is the part where tasks must wait for all other tasks to finish computing forces,
         //       since we need to aggregate x,y,ax,ay, which we used (all)
         //       this is basically the only real bottleneck, since everything else is balanced with even workloads
         laik_svg_profiler_enter(inst, "switch");
+        laik_timer_start(&switch_timer);
         laik_switchto_partitioning(data_x, particle_space_partitioning_master, LAIK_DF_Preserve, LAIK_RO_Max); // doesn't really do anything, just so ALL -> BLOCK in the next step will work
         laik_switchto_partitioning(data_y, particle_space_partitioning_master, LAIK_DF_Preserve, LAIK_RO_Max); // MAX because they all have the same values anyway
 
         laik_switchto_partitioning(data_ax, particle_space_partitioning, LAIK_DF_Preserve, LAIK_RO_Sum);
         laik_switchto_partitioning(data_ay, particle_space_partitioning, LAIK_DF_Preserve, LAIK_RO_Sum);
+        switch_time += laik_timer_stop(&switch_timer);
         laik_svg_profiler_exit(inst, "switch");
 
         laik_svg_profiler_enter(inst, "work");
@@ -783,9 +798,8 @@ int main(int argc, char **argv)
         laik_lbvis_save_trace();
 #endif
 
-    // print effective work time
-    double pct = (tfinal > 0.0) ? (100.0 * work_time / tfinal) : 0.0;
-    printf("Task %d: effective work time (excluding switches) = %fs (%.2f%% of total elapsed loop time)\n", myid, work_time, pct);
+    // print individual times
+    printf("Task %d: work time = %fs, switch time = %fs, load balancer time = %fs\n", myid, work_time, switch_time, lbm_time);
 
     return 0;
 }
