@@ -16,20 +16,18 @@ NTASKS_LIST = [2, 4, 8, 16, 32]
 ALGOS = ["hilbert", "gilbert", "rcb", "rcbincr"]
 FREQS = [125, 250, 500]
 
-# Directories
+# directories
 RESULTS_DIR = "results"
 LOG_DIR = "logs"
 os.makedirs(RESULTS_DIR, exist_ok=True)
 os.makedirs(LOG_DIR, exist_ok=True)
 
-# Output filenames (single pair for all combos)
+# filenames
 safe_prog = PROGNAME.replace("./", "").replace("/", "_")
 TS_CSV = os.path.join(RESULTS_DIR, f"results_{safe_prog}_timeseries.csv")
 SUM_CSV = os.path.join(RESULTS_DIR, f"results_{safe_prog}_summary.csv")
 
-# ---------------------------
-# Regexes
-# ---------------------------
+# patterns
 RE_TASK_CONTAINER = re.compile(r"\[LAIK-LB\]\s+T(?P<task>\d+),\s*([^,]+),\s*(?P<seg>\d+):\s*(?P<metrics>.*)")
 RE_MET_PAIR = re.compile(r"(?P<k>[a-zA-Z0-9_.]+)\s*(?:[:=])?\s*(?P<v>-?\d+\.?\d*(?:[eE][-+]?\d+)?)")
 RE_SEG_TIMES = re.compile(
@@ -45,13 +43,8 @@ RE_ALLOC_LINE = re.compile(
     r"\[LAIK-LB\]\s+T(?P<task>\d+):\s*num\. allocs:\s*(?P<num_allocs>\d+),\s*bytes alloced:\s*(?P<bytes_alloced>\d+),\s*num\. frees:\s*(?P<num_frees>\d+),\s*bytes freed:\s*(?P<bytes_freed>\d+),\s*max concurrent:\s*(?P<max_concurrent>\d+)"
 )
 
-# ---------------------------
-# Helpers
-# ---------------------------
-
 
 def parse_metric_pairs(s):
-    """Return dict of metric -> numeric value from a metric string."""
     d = {}
     for m in RE_MET_PAIR.finditer(s):
         k = m.group("k")
@@ -66,19 +59,9 @@ def parse_metric_pairs(s):
     return d
 
 
-# ---------------------------
-# Parsing of a single run
-# ---------------------------
-
-
 def parse_run_output(text, run_meta):
-    """
-    Parse LAIK-LB output text and return:
-      - timeseries_rows: list of dicts for each (task, segment) aggregated across containers
-      - summary_rows: list of dicts for each task summarizing the LAIK-LB summary lines
-    """
     timeseries_agg = defaultdict(lambda: defaultdict(lambda: defaultdict(float)))
-    timeseries_extra = {}  # seg -> dict of segment-level stats
+    timeseries_extra = {}
 
     summary_by_task = defaultdict(dict)
 
@@ -124,21 +107,19 @@ def parse_run_output(text, run_meta):
             d = parse_metric_pairs(metrics_str)
             for k, v in d.items():
                 timeseries_agg[seg][task][k] += v
-            # Map pending seg_info (if any) to this seg number (first-come)
             if None in timeseries_extra and timeseries_extra[None]:
                 if seg not in timeseries_extra:
                     timeseries_extra[seg] = timeseries_extra[None].pop(0)
                 else:
-                    # pop to keep queue in sync
                     timeseries_extra[None].pop(0)
             continue
 
-        # Done
+        # done
         if RE_DONE.search(ln):
             done_seen = True
             continue
 
-        # summary LAIK-LB lines after Done
+        # summary
         msum = RE_SUMMARY_LINE.search(ln)
         if msum and done_seen:
             task = int(msum.group("task"))
@@ -169,7 +150,7 @@ def parse_run_output(text, run_meta):
             )
             continue
 
-        # Task n: work time line (we parse but will exclude these fields later)
+        # times for task
         mtasktime = RE_TASK_SUM_TIME.search(ln)
         if mtasktime and done_seen:
             task = int(mtasktime.group("task"))
@@ -182,7 +163,7 @@ def parse_run_output(text, run_meta):
             )
             continue
 
-    # Build timeseries rows (do NOT include step,t,seg_mean,seg_rel_imbalance,seg_times)
+    # timeseries rows
     timeseries_rows = []
     for seg, tasks in sorted(timeseries_agg.items(), key=lambda x: x[0]):
         seg_info = timeseries_extra.get(seg, {})
@@ -200,7 +181,7 @@ def parse_run_output(text, run_meta):
                 row[k] = v
             timeseries_rows.append(row)
 
-    # Build summary rows (we will remove work_time_* keys later)
+    # summary rows
     summary_rows = []
     for task, d in sorted(summary_by_task.items(), key=lambda x: x[0]):
         row = {
@@ -214,11 +195,6 @@ def parse_run_output(text, run_meta):
         summary_rows.append(row)
 
     return timeseries_rows, summary_rows
-
-
-# ---------------------------
-# Run combos and parse
-# ---------------------------
 
 
 def main():
@@ -240,12 +216,12 @@ def main():
             out = f"__ERROR__ {e}\n"
             print(f"Run failed: {e}")
 
-        # Save raw output into logs/
+        # store logs
         safe_name = f"run_{ntasks}_{algo}_{freq}.log"
         with open(os.path.join(LOG_DIR, safe_name), "w") as fh:
             fh.write(out)
 
-        # Parse output
+        # parse output
         ts_rows, sum_rows = parse_run_output(out, meta)
         print(f"  parsed: {len(ts_rows)} timeseries rows, {len(sum_rows)} summary rows")
         all_timeseries.extend(ts_rows)
@@ -253,7 +229,7 @@ def main():
 
         time.sleep(0.2)
 
-    # Remove unwanted keys explicitly before writing CSVs
+    # remove unwanted keys explicitly before writing csvs
     for r in all_timeseries:
         for k in ("step", "t", "seg_mean", "seg_rel_imbalance", "seg_times"):
             if k in r:
@@ -264,7 +240,7 @@ def main():
             if k in r:
                 del r[k]
 
-    # CSV writing helper
+    # csv writing helper
     def write_dicts_to_csv(path, rows, base_fields):
         keys = set()
         for r in rows:
@@ -279,11 +255,11 @@ def main():
                 writer.writerow({k: r.get(k, "") for k in header})
         print(f"Wrote {len(rows)} rows to {path}")
 
-    # timeseries base fields (without step,t,seg_mean,seg_rel_imbalance,seg_times)
+    # timeseries base fields
     ts_base = ["prog", "ntasks", "algo", "freq", "segment", "task", "seg_stopped"]
     write_dicts_to_csv(TS_CSV, all_timeseries, ts_base)
 
-    # summary base fields (without work_time_s,switch_time_s,lb_time_s)
+    # summary base fields
     sum_base = ["prog", "ntasks", "algo", "freq", "task", "mc", "mb", "fc", "fb", "bs", "br", "num_allocs", "bytes_alloced", "num_frees", "bytes_freed", "max_concurrent"]
     write_dicts_to_csv(SUM_CSV, all_summary, sum_base)
 

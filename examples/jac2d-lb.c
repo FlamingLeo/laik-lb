@@ -59,7 +59,7 @@
     /* npRead: pointer to new read partition based on new write partition borders */ \
     if ((_iter == 0) || (iter < _iter))                                              \
     {                                                                                \
-        laik_timer_start(&lbm_timer);                                                 \
+        laik_timer_start(&lbm_timer);                                                \
         npWrite = laik_lb_balance(STOP_LB_SEGMENT, pWrite, algo);                    \
         npRead = laik_new_partitioning(prRead, world, space, npWrite);               \
         Laik_LBDataStats before_w = {0};                                             \
@@ -74,7 +74,7 @@
         laik_lb_stats_store(&after_r, dRead);                                        \
         laik_lb_print_diff(myid, dWrite, &after_w, &before_w);                       \
         laik_lb_print_diff(myid, dRead, &after_r, &before_r);                        \
-        lbm_time += laik_timer_stop(&lbm_timer);                                       \
+        lbm_time += laik_timer_stop(&lbm_timer);                                     \
     }
 #else
 #define DO_WORKLOAD(_iter) (void)0;
