@@ -2571,3 +2571,18 @@ void laik_lb_print_stats(int id)
         printf("[LAIK-LB] T%d: num. allocs: %d, bytes alloced: %ld, num. frees: %d, bytes freed: %ld, max concurrent: %ld\n", id, imalloc_count, imalloc_bytes, ifree_count, ifree_bytes, max_concurrently_allocated);
     }
 }
+
+void laik_lb_add_malloc(size_t size)
+{
+    imalloc_count++;
+    imalloc_bytes += size;
+    currently_allocated += size;
+    max_concurrently_allocated = MAX(max_concurrently_allocated, currently_allocated);
+}
+
+void laik_lb_add_free(size_t size)
+{
+    ifree_count++;
+    ifree_bytes += size;
+    currently_allocated -= size;
+}

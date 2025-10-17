@@ -411,6 +411,7 @@ int main(int argc, char **argv)
         fprintf(stderr, "Could not allocate memory for weight array!\n");
         exit(EXIT_FAILURE);
     }
+    laik_lb_add_malloc(ncells * sizeof(double));
 
     Laik_Partitioner *cell_partitioner_w = laik_new_bisection_partitioner();
     Laik_Partitioner *cell_partitioner_r = laik_new_cornerhalo_partitioner(1);
@@ -772,6 +773,7 @@ int main(int argc, char **argv)
         laik_svg_profiler_exit(inst, "work");
         work_time += laik_timer_stop(&work_timer); // stop and accumulate
     } // end loop
+
     double tfinal = laik_timer_stop(&timer);
 
     if (myid == 0)
@@ -792,6 +794,7 @@ int main(int argc, char **argv)
         }
     }
 
+    laik_lb_add_free(ncells * sizeof(double));
     laik_finalize(inst);
 #ifdef RUN_SCRIPTS
     if (myid == 0 && profiling)
@@ -800,6 +803,9 @@ int main(int argc, char **argv)
 
     // print individual times
     printf("Task %d: work time = %fs, switch time = %fs, load balancer time = %fs\n", myid, work_time, switch_time, lbm_time);
+
+    // print lb stats
+    laik_lb_print_stats(myid);
 
     return 0;
 }

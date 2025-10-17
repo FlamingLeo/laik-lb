@@ -103,4 +103,10 @@ void laik_lb_config_thresholds(int pstop, int pstart, double tstop, double tstar
 // print data statistics
 void laik_lb_print_stats(int id);
 
+// add external allocation statistic
+void laik_lb_add_malloc(size_t size);
+
+// add external free statistic
+void laik_lb_add_free(size_t size);
+
 #endif
