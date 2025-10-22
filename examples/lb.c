@@ -1,4 +1,23 @@
-// load balancing API / workflow example
+/* This file is part of the LAIK parallel container library.
+ * Copyright (c) 2025 Flavius Schmidt
+ *
+ * LAIK is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Lesser General Public License as
+ * published by the Free Software Foundation, version 3.
+ *
+ * LAIK is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public License
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
+ */
+
+ /*
+ * Per-process workload benchmark.
+ */
+
 #include <laik.h>
 #include <laik-internal.h>
 
@@ -47,7 +66,6 @@ int main_1d(int argc, char *argv[], int64_t spsize, int lcount, Laik_LBAlgorithm
     double c = (262144.0 / (double)spsize) * 0.5; // sleep time constant multiplier (def. max: ~1.31s)
 
     // run the example lcount times to test load balancing (and stopping threshold)
-    // maybe use laik's iteration functionality somewhere here?
     for (int i = 0; i < lcount; ++i)
     {
         // each task runs for a fixed task-specific number of iterations
@@ -114,7 +132,7 @@ int main_2d(int argc, char *argv[], int64_t sdsize, int lcount, Laik_LBAlgorithm
     int iterations = (id + 1) * 10;
     double c = (512.0 / (double)sdsize) * (512.0 / (double)sdsize) * 0.5; // sleep time constant multiplier (def. max: ~1.31s)
 
-    // modified version of the 1d example, to be changed to something more "professional" later (e.g. n-body)
+    // modified version of the 1d example
     for (int loop = 0; loop < lcount; ++loop)
     {
         laik_log(1, "%d ranges\n", laik_my_rangecount(part));

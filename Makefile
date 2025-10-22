@@ -3,7 +3,7 @@ ASANCOPT = -fsanitize=address -fno-omit-frame-pointer
 ASANLDOPT = -fsanitize=address -Wl,-Bdynamic -lasan
 
 PREFIX=/usr/local
-OPT=-O3
+OPT=-O3 -DNDEBUG
 # OPT=-O0 -g
 WARN=-Wall -Wextra
 SUBDIRS=examples

@@ -1,3 +1,19 @@
+/* This file is part of the LAIK parallel container library.
+ * Copyright (c) 2025 Flavius Schmidt
+ *
+ * LAIK is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Lesser General Public License as
+ * published by the Free Software Foundation, version 3.
+ *
+ * LAIK is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public License
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
+ */
+
 /**
  * 2D Molecular Dynamics example for Load Balancing (parallel).
  * (Lennard-Jones force; collision of two particle cuboids, psuedo-reflective boundaries)
@@ -382,7 +398,7 @@ int main(int argc, char **argv)
             int64_t ysize, ystride, xsize;
             laik_get_map_2d(data_head_w, 0, (void **)&baseHeadW, &ysize, &ystride, &xsize);
             laik_get_map_2d(data_head_r, 0, (void **)&baseHeadR, 0, 0, 0); // size and stride should be the same
-            laik_get_map_1d(data_next, 0, (void **)&baseNext, 0);          // maybe not needed? in case next base ptr doesn't change
+            laik_get_map_1d(data_next, 0, (void **)&baseNext, 0);
             laik_get_map_1d(data_x, 0, (void **)&baseX, 0);
             laik_get_map_1d(data_y, 0, (void **)&baseY, 0);
             assert(xsize == ncells_x && ysize == ncells_y && ystride == ncells_x);

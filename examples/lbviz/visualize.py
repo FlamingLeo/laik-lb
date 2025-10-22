@@ -206,7 +206,7 @@ def visualize_array_as_image(array,
     plt.savefig(out_filename, bbox_inches='tight')
     plt.close()
 
-# main wiring
+
 def main():
     parser = argparse.ArgumentParser(description='visualize csv ranges (1d/2d/3d)')
     parser.add_argument('filename', help='absolute path to input csv (range form)')
@@ -227,7 +227,6 @@ def main():
         sys.exit(1)
 
     base_dir = os.path.dirname(filename)
-    base_name = os.path.splitext(os.path.basename(filename))[0]
     timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
     out_filename = os.path.join(base_dir, f'plot_{timestamp}.png')
 

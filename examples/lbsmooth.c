@@ -1,4 +1,22 @@
-// smoothing test
+/* This file is part of the LAIK parallel container library.
+ * Copyright (c) 2025 Flavius Schmidt
+ *
+ * LAIK is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Lesser General Public License as
+ * published by the Free Software Foundation, version 3.
+ *
+ * LAIK is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public License
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
+ */
+
+ /*
+ * Smoothing benchmark.
+ */
 #include <laik.h>
 #include <laik-internal.h>
 
@@ -8,8 +26,7 @@
 #include <string.h>
 #include <unistd.h>
 
-// 2d example
-int main_2d(int argc, char *argv[], int64_t sdsize, int lcount, Laik_LBAlgorithm lbalg, bool smoothing, bool suspend, bool intelligent)
+int do_it(int argc, char *argv[], int64_t sdsize, int lcount, Laik_LBAlgorithm lbalg, bool smoothing, bool suspend, bool intelligent)
 {
     // initialization
     Laik_Instance *inst = laik_init(&argc, &argv);
@@ -40,13 +57,13 @@ int main_2d(int argc, char *argv[], int64_t sdsize, int lcount, Laik_LBAlgorithm
     Laik_Timer t = {0};
     laik_timer_start(&t);
 
-    // modified version of the 1d example, to be changed to something more "professional" later (e.g. n-body)
     for (int loop = 0; loop < lcount; ++loop)
     {
         laik_log(1, "%d ranges\n", laik_my_rangecount(part));
         laik_lb_balance(START_LB_SEGMENT, 0, 0);
 
         // for intelligent mode, only activate smoothing after a certain number of iterations
+        // for the future, this configuration should be done automatically
         if (smoothing && intelligent)
         {
             if (loop == 2)
@@ -163,5 +180,5 @@ int main(int argc, char *argv[])
 
     if (sidelen == 0)
         sidelen = 1024;
-    main_2d(argc, argv, sidelen, lcount, algo, smoothing, suspend, intelligent);
+    do_it(argc, argv, sidelen, lcount, algo, smoothing, suspend, intelligent);
 }

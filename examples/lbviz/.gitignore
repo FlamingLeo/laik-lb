@@ -1,6 +1,7 @@
 plots/
-json/
+json/*.json
 *.png
+*.pdf
 *.svg
 *.txt
 *.json

@@ -1,3 +1,19 @@
+/* This file is part of the LAIK parallel container library.
+ * Copyright (c) 2025 Flavius Schmidt
+ *
+ * LAIK is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Lesser General Public License as
+ * published by the Free Software Foundation, version 3.
+ *
+ * LAIK is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public License
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
+ */
+
 /**
  * 3D Molecular Dynamics example for Load Balancing (parallel).
  * (Lennard-Jones force; collision of two particle cuboids, psuedo-reflective boundaries)
@@ -68,14 +84,14 @@ double sigma6;
 double cutoff2;
 
 // helper function to get local neighbor indices in read (dataW + cornerhalo) partition
-// adapted to 3D
-// Parameters:
-//  w_idx         : index in write partition (1D index into write-local 3D block)
-//  w_x, w_y, w_z : write shape (xsize, ysize, zsize)
+// 
+// parameters:
+//  w_idx            : index in write partition (1D index into write-local 3D block)
+//  w_x, w_y, w_z    : write shape (xsize, ysize, zsize)
 //  w_x0, w_y0, w_z0 : write origin (global coords of the write block start)
-//  r_x, r_y, r_z : read shape (xsize, ysize, zsize)
+//  r_x, r_y, r_z    : read shape (xsize, ysize, zsize)
 //  r_x0, r_y0, r_z0 : read origin (global coords of read block start)
-//  out_buf[_len] : out array to write neighbor indices into (up to 27 entries)
+//  out_buf[_len]    : out array to write neighbor indices into (up to 27 entries)
 // returns number of elements written or -1 on error
 static inline int64_t neighbors_in_read_3d(int64_t w_idx,
                                            int64_t w_x, int64_t w_y, int64_t w_z,
@@ -388,7 +404,7 @@ int main(int argc, char **argv)
     Laik_Data *data_next = laik_new_data(particle_space, laik_Int64);    // index of next particle in a cell (or -1)
 
     Laik_Partitioning *particle_space_partitioning = laik_new_partitioning(laik_new_block_partitioner1(), world, particle_space, 0); // block for loop calculations
-    Laik_Partitioning *particle_space_partitioning_master = laik_new_partitioning(laik_Master, world, particle_space, 0);            // master for init (and aggregation?)
+    Laik_Partitioning *particle_space_partitioning_master = laik_new_partitioning(laik_Master, world, particle_space, 0);            // master for init and aggregation
     Laik_Partitioning *particle_space_partitioning_all = laik_new_partitioning(laik_All, world, particle_space, 0);                  // all for aggregation
 
     laik_switchto_partitioning(data_x, particle_space_partitioning_master, LAIK_DF_None, LAIK_RO_None);

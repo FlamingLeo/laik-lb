@@ -1,4 +1,19 @@
-// load balancing API / workflow example
+/* This file is part of the LAIK parallel container library.
+ * Copyright (c) 2025 Flavius Schmidt
+ *
+ * LAIK is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Lesser General Public License as
+ * published by the Free Software Foundation, version 3.
+ *
+ * LAIK is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public License
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
+ */
+
 #include <laik-internal.h>
 
 #include <assert.h>
@@ -6,9 +21,6 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
-
-#define IDX2D(x, y) ((y) * width + (x))
-#define IDX3D(x, y, z) ((x) + width * ((y) + height * (z)))
 
 // helper lookup table for fast log2 for powers of 2
 static const int log2_tab[64] = {
