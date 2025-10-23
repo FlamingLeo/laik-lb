@@ -2,5 +2,4 @@ output/
 *.png
 *.svg
 *.log
-*.csv
 *.pgf
