@@ -199,6 +199,16 @@ int main(int argc, char **argv)
         // visualize final partitioning
         if (!strcmp(argv[arg], "-v"))
             do_visualization = true;
+
+        // print help
+        if (!strcmp(argv[arg], "-h"))
+        {
+            printf("Options:\n"
+                   "-p : export trace data\n"
+                   "-o : disable console output entirely\n"
+                   "-v : visualize final partitioning\n");
+            exit(1);
+        }
     }
 
     if (profiling)

@@ -307,6 +307,21 @@ int main(int argc, char **argv)
         // choose lb algorithm (unknown -> check lb.c)
         if (arg + 1 < argc && !strcmp(argv[arg], "-a"))
             lbalgo = laik_strtolb(argv[++arg]);
+
+        // print help
+        if (!strcmp(argv[arg], "-h"))
+        {
+            printf("Options:\n"
+                   "-a <algo>    : lb algorithm\n"
+                   "-l           : show lb times\n"
+                   "-n <count>   : do load balancing every n iterations\n"
+                   "-p           : export trace data\n"
+                   "-o           : disable console output entirely\n"
+                   "-s <d,f,f,f> : configure lb smoothing\n"
+                   "-t <d,d,f,f> : configure lb thresholds\n"
+                   "-v           : visualize final partitioning\n");
+            exit(1);
+        }
     }
 
     // enable svg trace

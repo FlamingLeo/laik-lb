@@ -84,7 +84,7 @@ double sigma6;
 double cutoff2;
 
 // helper function to get local neighbor indices in read (dataW + cornerhalo) partition
-// 
+//
 // parameters:
 //  w_idx            : index in write partition (1D index into write-local 3D block)
 //  w_x, w_y, w_z    : write shape (xsize, ysize, zsize)
@@ -242,6 +242,16 @@ int main(int argc, char **argv)
         // visualize final partitioning
         if (!strcmp(argv[arg], "-v"))
             do_visualization = true;
+
+        // print help
+        if (!strcmp(argv[arg], "-h"))
+        {
+            printf("Options:\n"
+                   "-p : export trace data\n"
+                   "-o : disable console output entirely\n"
+                   "-v : visualize final partitioning\n");
+            exit(1);
+        }
     }
 
     if (profiling)

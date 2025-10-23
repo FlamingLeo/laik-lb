@@ -84,7 +84,7 @@ double sigma6;
 double cutoff2;
 
 // helper function to get local neighbor indices in read (dataW + cornerhalo) partition
-// 
+//
 // parameters:
 //  w_idx            : index in write partition (1D index into write-local 3D block)
 //  w_x, w_y, w_z    : write shape (xsize, ysize, zsize)
@@ -357,6 +357,21 @@ int main(int argc, char **argv)
         // choose lb algorithm (unknown -> check lb.c)
         if (arg + 1 < argc && !strcmp(argv[arg], "-a"))
             lbalgo = laik_strtolb(argv[++arg]);
+
+        // print help
+        if (!strcmp(argv[arg], "-h"))
+        {
+            printf("Options:\n"
+                   "-a <algo>    : lb algorithm\n"
+                   "-l           : show lb times\n"
+                   "-n <count>   : do load balancing every n iterations\n"
+                   "-p           : export trace data\n"
+                   "-o           : disable console output entirely\n"
+                   "-s <d,f,f,f> : configure lb smoothing\n"
+                   "-t <d,d,f,f> : configure lb thresholds\n"
+                   "-v           : visualize final partitioning\n");
+            exit(1);
+        }
     }
 
     // enable svg trace
