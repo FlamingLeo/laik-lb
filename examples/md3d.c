@@ -84,7 +84,7 @@ double sigma6;
 double cutoff2;
 
 // helper function to get local neighbor indices in read (dataW + cornerhalo) partition
-//
+// 
 // parameters:
 //  w_idx            : index in write partition (1D index into write-local 3D block)
 //  w_x, w_y, w_z    : write shape (xsize, ysize, zsize)
@@ -223,12 +223,14 @@ int main(int argc, char **argv)
     Laik_Instance *inst = laik_init(&argc, &argv);
     Laik_Group *world = laik_world(inst);
     int myid = laik_myid(world);
+    int statsevery = INT32_MAX;
     bool profiling = false, do_visualization = false, output = true;
 
     // options:
     // -p : export trace data
     // -o : disable console output entirely
     // -v : visualize final partitioning
+    // -n : collect stats every _ iterations
     for (int arg = 1; arg < argc; ++arg)
     {
         // profiling (svg)
@@ -243,21 +245,17 @@ int main(int argc, char **argv)
         if (!strcmp(argv[arg], "-v"))
             do_visualization = true;
 
-        // print help
-        if (!strcmp(argv[arg], "-h"))
+        // collect stats
+        if (arg + 1 < argc && !strcmp(argv[arg], "-n"))
         {
-            printf("Options:\n"
-                   "-p : export trace data\n"
-                   "-o : disable console output entirely\n"
-                   "-v : visualize final partitioning\n");
-            exit(1);
+            statsevery = atoi(argv[++arg]);
+            if (statsevery < 10)
+                statsevery = 10;
         }
     }
 
     if (profiling)
         laik_lbvis_enable_trace(myid, inst);
-
-    laik_svg_profiler_enter(inst, __func__);
 
     if (myid == 0)
     {
@@ -428,20 +426,44 @@ int main(int argc, char **argv)
     ////////////////////////////////////
 
     double t = START_TIME;
+
+    // accumulate time spent in work regions (exclude switch/communication)
+    Laik_Timer work_timer = {0};
+    Laik_Timer switch_timer = {0};
+    double work_time = 0.0;
+    double switch_time = 0.0;
+
+    Laik_LBDataStats before_w = {0};
+    Laik_LBDataStats before_r = {0};
+    Laik_LBDataStats after_w = {0};
+    Laik_LBDataStats after_r = {0};
+
     laik_timer_start(&timer);
-    laik_svg_profiler_enter(inst, "integration-loop");
     for (long step = 0; step < nsteps; ++step)
     {
-        laik_svg_profiler_enter(inst, "pos,force: master -> block");
+        if (step % statsevery == 0)
+        {
+            laik_lb_stats_store(&before_w, data_head_w);
+            laik_lb_stats_store(&before_r, data_head_r);
+            laik_lb_incr_segment();
+        }
+
+        laik_svg_profiler_mark_iteration(inst, step);
+
+        laik_svg_profiler_enter(inst, "switch");
+        laik_timer_start(&switch_timer);
         laik_switchto_partitioning(data_x, particle_space_partitioning, LAIK_DF_Preserve, LAIK_RO_None);
         laik_switchto_partitioning(data_y, particle_space_partitioning, LAIK_DF_Preserve, LAIK_RO_None);
         laik_switchto_partitioning(data_z, particle_space_partitioning, LAIK_DF_Preserve, LAIK_RO_None);
         laik_switchto_partitioning(data_ax, particle_space_partitioning, LAIK_DF_Preserve, LAIK_RO_None);
         laik_switchto_partitioning(data_ay, particle_space_partitioning, LAIK_DF_Preserve, LAIK_RO_None);
         laik_switchto_partitioning(data_az, particle_space_partitioning, LAIK_DF_Preserve, LAIK_RO_None);
-        laik_svg_profiler_exit(inst, "pos,force: master -> block");
+        switch_time += laik_timer_stop(&switch_timer);
+        laik_svg_profiler_exit(inst, "switch");
 
         // count is all the same here (identical partitioning)
+        laik_svg_profiler_enter(inst, "work");
+        laik_timer_start(&work_timer); // start measuring this work region
         laik_get_map_1d(data_x, 0, (void **)&baseX, &count);
         laik_get_map_1d(data_y, 0, (void **)&baseY, 0);
         laik_get_map_1d(data_z, 0, (void **)&baseZ, 0);
@@ -464,23 +486,28 @@ int main(int argc, char **argv)
             baseAZ[i] = 0.0;
         }
 
+        laik_svg_profiler_exit(inst, "work");
+        work_time += laik_timer_stop(&work_timer); // stop and accumulate
+
         // distribute relevant data for acceleration calculation to all tasks
-        laik_svg_profiler_enter(inst, "pos,force: block -> all");
+        laik_svg_profiler_enter(inst, "switch");
+        laik_timer_start(&switch_timer);
         laik_switchto_partitioning(data_x, particle_space_partitioning_all, LAIK_DF_Preserve, LAIK_RO_None);
         laik_switchto_partitioning(data_y, particle_space_partitioning_all, LAIK_DF_Preserve, LAIK_RO_None);
         laik_switchto_partitioning(data_z, particle_space_partitioning_all, LAIK_DF_Preserve, LAIK_RO_None);
         laik_switchto_partitioning(data_ax, particle_space_partitioning_all, LAIK_DF_Preserve, LAIK_RO_None);
         laik_switchto_partitioning(data_ay, particle_space_partitioning_all, LAIK_DF_Preserve, LAIK_RO_None);
         laik_switchto_partitioning(data_az, particle_space_partitioning_all, LAIK_DF_Preserve, LAIK_RO_None);
-        laik_svg_profiler_exit(inst, "pos,force: block -> all");
 
         // master (re-)initializes cell list
-        laik_svg_profiler_enter(inst, "w,r,next: init");
         laik_switchto_partitioning(data_head_w, cell_partitioning_master, LAIK_DF_None, LAIK_RO_None);
         laik_switchto_partitioning(data_head_r, cell_partitioning_master, LAIK_DF_None, LAIK_RO_None);
         laik_switchto_partitioning(data_next, particle_space_partitioning_master, LAIK_DF_None, LAIK_RO_None);
-        laik_svg_profiler_exit(inst, "w,r,next: init");
+        switch_time += laik_timer_stop(&switch_timer);
+        laik_svg_profiler_exit(inst, "switch");
 
+        laik_svg_profiler_enter(inst, "work");
+        laik_timer_start(&work_timer); // start measuring this work region
         if (myid == 0)
         {
             uint64_t zsize, zstride, ysize, ystride, xsize;
@@ -517,16 +544,22 @@ int main(int argc, char **argv)
                 baseHeadR[c] = p;
             }
         }
+        laik_svg_profiler_exit(inst, "work");
+        work_time += laik_timer_stop(&work_timer); // stop and accumulate
 
         // partition initialized cell list across all tasks
-        laik_svg_profiler_enter(inst, "w,r,next: master -> ?/halo/all");
+        laik_svg_profiler_enter(inst, "switch");
+        laik_timer_start(&switch_timer);
         laik_switchto_partitioning(data_head_w, cell_partitioning_w, LAIK_DF_Preserve, LAIK_DF_None);
         laik_switchto_partitioning(data_head_r, cell_partitioning_r, LAIK_DF_Preserve, LAIK_DF_None);
         laik_switchto_partitioning(data_next, particle_space_partitioning_all, LAIK_DF_Preserve, LAIK_DF_None);
-        laik_svg_profiler_exit(inst, "w,r,next: master -> ?/halo/all");
+        switch_time += laik_timer_stop(&switch_timer);
+        laik_svg_profiler_exit(inst, "switch");
 
         // all   : x,y,z,ax,ay,az
         // bisect: cell head W/R (halo)
+        laik_svg_profiler_enter(inst, "work");
+        laik_timer_start(&work_timer); // start measuring this work region
         laik_get_map_1d(data_x, 0, (void **)&baseX, 0);
         laik_get_map_1d(data_y, 0, (void **)&baseY, 0);
         laik_get_map_1d(data_z, 0, (void **)&baseZ, 0);
@@ -638,20 +671,24 @@ int main(int argc, char **argv)
                 }
             }
         }
+        laik_svg_profiler_exit(inst, "work");
+        work_time += laik_timer_stop(&work_timer); // stop and accumulate
 
         // aggregate forces for velocity calc
-        laik_svg_profiler_enter(inst, "pos: all -> master/block");
+        laik_svg_profiler_enter(inst, "switch");
+        laik_timer_start(&switch_timer);
         laik_switchto_partitioning(data_x, particle_space_partitioning_master, LAIK_DF_Preserve, LAIK_RO_Max); // doesn't really do anything, just so ALL -> BLOCK in the next step will work
         laik_switchto_partitioning(data_y, particle_space_partitioning_master, LAIK_DF_Preserve, LAIK_RO_Max);
         laik_switchto_partitioning(data_z, particle_space_partitioning_master, LAIK_DF_Preserve, LAIK_RO_Max);
-        laik_svg_profiler_exit(inst, "pos: all -> master/block");
 
-        laik_svg_profiler_enter(inst, "force: all -> block");
         laik_switchto_partitioning(data_ax, particle_space_partitioning, LAIK_DF_Preserve, LAIK_RO_Sum);
         laik_switchto_partitioning(data_ay, particle_space_partitioning, LAIK_DF_Preserve, LAIK_RO_Sum);
         laik_switchto_partitioning(data_az, particle_space_partitioning, LAIK_DF_Preserve, LAIK_RO_Sum);
-        laik_svg_profiler_exit(inst, "force: all -> block");
+        switch_time += laik_timer_stop(&switch_timer);
+        laik_svg_profiler_exit(inst, "switch");
 
+        laik_svg_profiler_enter(inst, "work");
+        laik_timer_start(&work_timer);                         // start measuring this work region
         laik_get_map_1d(data_ax, 0, (void **)&baseAX, &count); // count probably not needed here
         laik_get_map_1d(data_ay, 0, (void **)&baseAY, 0);
         laik_get_map_1d(data_az, 0, (void **)&baseAZ, 0);
@@ -669,6 +706,7 @@ int main(int argc, char **argv)
         // follow intermediate state via kinetic energy (over particles)
         if (output && (step % print_every) == 0)
         {
+            laik_svg_profiler_enter(inst, "ke");
             double ke = 0.0;
             for (int i = 0; i < count; ++i)
                 ke += 0.5 * MASS * (baseVX[i] * baseVX[i] + baseVY[i] * baseVY[i] + baseVZ[i] * baseVZ[i]);
@@ -685,15 +723,24 @@ int main(int argc, char **argv)
             if (myid == 0)
                 printf("step %ld / %ld, t=%.4f, E=%.6f\n",
                        step, nsteps, t, total);
+            laik_svg_profiler_exit(inst, "ke");
+        }
+        laik_svg_profiler_exit(inst, "work");
+        work_time += laik_timer_stop(&work_timer); // stop and accumulate
+
+        if (step % statsevery == (statsevery - 1))
+        {
+            laik_lb_stats_store(&after_w, data_head_w);
+            laik_lb_stats_store(&after_r, data_head_r);
+            laik_lb_print_diff(myid, data_head_w, &after_w, &before_w);
+            laik_lb_print_diff(myid, data_head_r, &after_r, &before_r);
         }
     }
-    laik_svg_profiler_exit(inst, "integration-loop");
     double taken = laik_timer_stop(&timer);
 
     if (myid == 0)
         printf("Done. Time taken: %fs\n", taken);
 
-    laik_svg_profiler_exit(inst, __func__);
     laik_svg_profiler_export_json(inst);
 
     // visualize task ranges
@@ -714,5 +761,9 @@ int main(int argc, char **argv)
     if (myid == 0 && profiling)
         laik_lbvis_save_trace();
 #endif
+
+    // print individiual times
+    printf("Task %d: work time = %fs, switch time = %fs, load balancer time = N/A\n", myid, work_time, switch_time);
+
     return 0;
 }

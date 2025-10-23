@@ -42,7 +42,7 @@
     {                                                                                                  \
         int64_t globFromX, globToX, globFromY, globToY, globFromZ, globToZ;                            \
         laik_my_range_3d(pWrite, r, &globFromX, &globToX, &globFromY, &globToY, &globFromZ, &globToZ); \
-        int itercount = ((globFromX + x) + (globFromY + y) + (globFromZ + z)) * 100;                   \
+        int itercount = ((globFromX + x) + (globFromY + y) + (globFromZ + z)) * 150;                   \
         volatile double sink = 0.0; /* volatile to prevent optimizing out */                           \
         for (int k = 0; k < itercount; ++k)                                                            \
             sink += baseR[z * zstrideR + y * ystrideR + x] * 0.0 + k * 1e-9;                           \
@@ -55,10 +55,22 @@
     /* npRead: pointer to new read partition based on new write partition borders */ \
     if ((_iter == 0) || (iter < _iter))                                              \
     {                                                                                \
+        laik_timer_start(&lbm_timer);                                                \
         npWrite = laik_lb_balance(STOP_LB_SEGMENT, pWrite, algo);                    \
         npRead = laik_new_partitioning(prRead, world, space, npWrite);               \
+        Laik_LBDataStats before_w = {0};                                             \
+        Laik_LBDataStats before_r = {0};                                             \
+        laik_lb_stats_store(&before_w, dWrite);                                      \
+        laik_lb_stats_store(&before_r, dRead);                                       \
         laik_lb_switch_and_free(&pWrite, &npWrite, dWrite, LAIK_DF_Preserve);        \
         laik_lb_switch_and_free(&pRead, &npRead, dRead, LAIK_DF_None);               \
+        Laik_LBDataStats after_w = {0};                                              \
+        Laik_LBDataStats after_r = {0};                                              \
+        laik_lb_stats_store(&after_w, dWrite);                                       \
+        laik_lb_stats_store(&after_r, dRead);                                        \
+        laik_lb_print_diff(myid, dWrite, &after_w, &before_w);                       \
+        laik_lb_print_diff(myid, dRead, &after_r, &before_r);                        \
+        lbm_time += laik_timer_stop(&lbm_timer);                                     \
     }
 #else
 #define DO_WORKLOAD(_iter) (void)0;
@@ -145,6 +157,7 @@ int main(int argc, char *argv[])
     bool do_visualization = false;
     bool do_sum = true;
     bool do_grid = false;
+    bool do_lb = true;
     Laik_LBAlgorithm algo = LB_HILBERT;
     int myid = laik_myid(world);
     int xblocks = 0, yblocks = 0, zblocks = 0; // for grid partitioner
@@ -152,7 +165,7 @@ int main(int argc, char *argv[])
     int arg = 1;
     while ((argc > arg) && (argv[arg][0] == '-'))
     {
-        if (argv[arg][1] == 'n')
+        if (argv[arg][1] == 'N')
             use_cornerhalo = false;
         if (argv[arg][1] == 'p')
             do_profiling = true;
@@ -167,29 +180,35 @@ int main(int argc, char *argv[])
             xblocks = atoi(argv[++arg]);
             do_grid = true;
         }
+        if (argv[arg][1] == 'L')
+            do_lb = false;
         if (argv[arg][1] == 'h')
         {
             if (myid == 0)
-                printf("Usage: %s [options] <lb-algo> <side width> <maxiter>\n\n"
+                printf("Usage: %s [options]\n\n"
                        "Options:\n"
-                       " -n        : use partitioner which does not include corners\n"
+                       " -a        : choose load balancing algorithm\n"
+                       " -N        : use partitioner which does not include corners\n"
                        " -g        : use grid partitioning with automatic block size\n"
                        " -x <xgrid>: use grid partitioning with given x block length\n"
                        " -p        : export and visualize program trace as json files / collective svg'\n"
                        " -s        : print value sum at end (warning: sum done at master)\n"
                        " -v        : export and visualize partitioning borders at the end of the run\n"
+                       " -L        : disable load balancing\n"
                        " -h        : print this help text and exit with code 1\n",
                        argv[0]);
             exit(1);
         }
+        if (argv[arg][1] == 'a' && argc > arg + 1)
+            algo = laik_strtolb(argv[++arg]);
         arg++;
     }
+    /*
     if (argc > arg)
-        algo = laik_strtolb(argv[arg]);
-    if (argc > arg + 1)
-        size = atoi(argv[arg + 1]);
-    if (argc > arg + 2)
-        maxiter = atoi(argv[arg + 2]);
+        size = atoi(argv[arg]);
+    if (argc > arg)
+        maxiter = atoi(argv[arg]);
+    */
 
     if (size == 0)
         size = SIZE;
@@ -231,7 +250,7 @@ int main(int argc, char *argv[])
             printf(" (grid %d x %d x %d)", zblocks, yblocks, xblocks);
         if (!use_cornerhalo)
             printf(" (halo without corners)");
-        printf("\nvisualization: %d, profiling: %d, sum: %d\n", do_visualization, do_profiling, do_sum);
+        printf("\nvisualization: %d, profiling: %d, sum: %d, load balancing: %d\n", do_visualization, do_profiling, do_sum, do_lb);
     }
 
     // start profiling interface
@@ -300,9 +319,17 @@ int main(int argc, char *argv[])
     int res_iters = 0; // iterations done with residuum calculation
 
     laik_svg_profiler_enter(inst, __func__);
+    Laik_Timer timer = {0};
+    Laik_Timer work_timer = {0};
+    Laik_Timer switch_timer = {0};
+    Laik_Timer lbm_timer = {0};
+    double switch_time = 0.0;
+    double lbm_time = 0.0;
+    double work_time = 0.0;
 
     // begin iterations
     int iter = 0;
+    laik_timer_start(&timer);
     for (; iter < maxiter; iter++)
     {
         laik_set_iteration(inst, iter + 1);
@@ -319,9 +346,18 @@ int main(int argc, char *argv[])
             dWrite = data2;
         }
 
+        if (iter < WL_LB_ITER)
+            laik_timer_start(&switch_timer);
+
         //  switch to partitionings
         laik_switchto_partitioning(dRead, pRead, LAIK_DF_Preserve, LAIK_RO_None);
         laik_switchto_partitioning(dWrite, pWrite, LAIK_DF_None, LAIK_RO_None);
+
+        if (iter < WL_LB_ITER)
+            switch_time += laik_timer_stop(&switch_timer);
+
+        if (iter < WL_LB_ITER)
+            laik_timer_start(&work_timer);
 
         double vSum, vNew, diff, res = 0.0;
         double coeff = 1.0 / 6.0;
@@ -403,7 +439,11 @@ int main(int argc, char *argv[])
             }
         } // end ranges / mappings loop
 
-        LOAD_BALANCE(WL_LB_ITER);
+        if (iter < WL_LB_ITER)
+            work_time += laik_timer_stop(&work_timer); // stop and accumulate
+
+        if (do_lb)
+            LOAD_BALANCE(WL_LB_ITER);
 
         // check for residuum on proper iteration
         if (resCond)
@@ -441,7 +481,9 @@ int main(int argc, char *argv[])
             if (res < .001)
                 break;
         } // end residual calculation
+        laik_timer_start(&work_timer);
     } // end iterations
+    double tfinal = laik_timer_stop(&timer);
 
     // statistics for all iterations and reductions
     // using work load in all tasks
@@ -480,6 +522,9 @@ int main(int argc, char *argv[])
         }
     }
 
+    if (myid == 0)
+        printf("Done. Time taken: %fs\n", tfinal);
+
     if (do_visualization)
     {
         if (myid == 0)
@@ -496,5 +541,13 @@ int main(int argc, char *argv[])
     laik_finalize(inst);
     if (do_profiling && myid == 0)
         laik_lbvis_save_trace();
+
+    laik_lb_print_stats(myid);
+
+    // print individual times
+    if (do_lb)
+        printf("Task %d: work time = %fs, switch time = %fs, load balancer time = %fs\n", myid, work_time, switch_time, lbm_time);
+    else
+        printf("Task %d: work time = %fs, switch time = %fs, load balancer time = N/A\n", myid, work_time, switch_time);
     return 0;
 }

@@ -26,6 +26,7 @@ jac3d-lb
 lb
 lbpp
 lbsmooth
+lbcommon
 test
 markov-ser
 markov
@@ -54,3 +55,5 @@ README-example
 /vsum3
 *core*
 logs/
+results/
+outputs/

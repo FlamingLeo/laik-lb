@@ -26,6 +26,12 @@
 #include <string.h>
 #include <unistd.h>
 
+
+// smoothing params
+static double am = -1.0;  // 0.15
+static double rmi = -1.0; // 0.7
+static double rma = -1.0; // 1.25
+
 int do_it(int argc, char *argv[], int64_t sdsize, int lcount, Laik_LBAlgorithm lbalg, bool smoothing, bool suspend, bool intelligent)
 {
     // initialization
@@ -38,7 +44,7 @@ int do_it(int argc, char *argv[], int64_t sdsize, int lcount, Laik_LBAlgorithm l
 
     // for basic smoothing only, start with smoothing immediately
     if (smoothing && !intelligent)
-        laik_lb_config_smoothing(1, -1, -1, -1);
+        laik_lb_config_smoothing(1, am, rmi, rma);
 
     if (id == 0)
     {
@@ -46,6 +52,7 @@ int do_it(int argc, char *argv[], int64_t sdsize, int lcount, Laik_LBAlgorithm l
         printf("Space size %ldx%ld = %ld.\n", sdsize, sdsize, sdsize * sdsize);
         printf("Using LB algorithm: %s\n", laik_get_lb_algorithm_name(lbalg));
         printf("Smoothing: %d, Suspend: %d, Intelligent: %d\n", smoothing, suspend, intelligent);
+        printf("alpha: %f, rmin: %f, rmax: %f\n", am, rmi, rma);
     }
 
     Laik_Space *space = laik_new_space_2d(inst, sdsize, sdsize);
@@ -67,12 +74,14 @@ int do_it(int argc, char *argv[], int64_t sdsize, int lcount, Laik_LBAlgorithm l
         if (smoothing && intelligent)
         {
             if (loop == 2)
-                laik_lb_config_smoothing(1, -1, -1, -1);
+                laik_lb_config_smoothing(1, am, rmi, rma);
             if (loop == 5)
-                laik_lb_config_smoothing(1, 0.5, 0.001, 9999);
-                laik_lb_config_thresholds(5,-1,-1,-1);
-            if (loop == 7)
-                laik_lb_config_smoothing(1, -1, -1, -1);
+            {
+                laik_lb_config_smoothing(1, 0.99, 1e-30, HUGE_VAL);
+                laik_lb_config_thresholds(5, -1, -1, -1);
+            }
+            if (loop == 8)
+                laik_lb_config_smoothing(1, am, rmi, rma);
         }
 
         // suspend execution of first proc. only for 5th iter
@@ -103,7 +112,12 @@ int do_it(int argc, char *argv[], int64_t sdsize, int lcount, Laik_LBAlgorithm l
 
         // calculate and switch to new partitioning determined by load balancing algorithm
         Laik_Partitioning *newpart = laik_lb_balance(STOP_LB_SEGMENT, part, lbalg);
+        Laik_LBDataStats before = {0};
+        laik_lb_stats_store(&before, data);
         laik_lb_switch_and_free(&part, &newpart, data, LAIK_DF_Preserve);
+        Laik_LBDataStats after = {0};
+        laik_lb_stats_store(&after, data);
+        laik_lb_print_diff(id, data, &after, &before);
     }
 
     double time = laik_timer_stop(&t);
@@ -116,12 +130,12 @@ int do_it(int argc, char *argv[], int64_t sdsize, int lcount, Laik_LBAlgorithm l
     laik_finalize(inst);
     if (id == 0)
         laik_lbvis_save_trace();
+
+    laik_lb_print_stats(id);
     return 0;
 }
 
 // choose example and parameters based on input
-//
-// USAGE: <mpirun -n x> ./lb [example] <do_vis> <lb_algo> <spacesize> <loopcount>
 int main(int argc, char *argv[])
 {
     // prepare program trace visualization
@@ -148,6 +162,18 @@ int main(int argc, char *argv[])
         if (arg + 1 < argc && !strcmp(argv[arg], "-l"))
             lcount = atoi(argv[++arg]);
 
+        // smoothing: alpha
+        if (arg + 1 < argc && !strcmp(argv[arg], "-A"))
+            am = atof(argv[++arg]);
+
+        // smoothing: rmin
+        if (arg + 1 < argc && !strcmp(argv[arg], "-r"))
+            rmi = atof(argv[++arg]);
+
+        // smoothing: rmax
+        if (arg + 1 < argc && !strcmp(argv[arg], "-R"))
+            rma = atof(argv[++arg]);
+
         // do not use intelligent mode
         if (!strcmp(argv[arg], "-i"))
             intelligent = false;
@@ -160,17 +186,25 @@ int main(int argc, char *argv[])
         if (!strcmp(argv[arg], "-p"))
             suspend = false;
 
+        // disable output
+        if (!strcmp(argv[arg], "-O"))
+            laik_lb_output(false);
+
         // help
         if (argv[arg][1] == 'h')
         {
             printf("Usage: %s [options]\n\n"
                    "Options:\n"
                    " -a : choose load balancing algorithm (default: rcb)\n"
+                   " -A : choose alpha (default: 0.15)\n"
+                   " -r : choose rmin (default: 0.7)\n"
+                   " -R : choose rmax (default: 1.25)\n"
                    " -s : choose side length (default: 1024)\n"
                    " -S : do not apply smoothing\n"
-                   " -i : do not use intelligent smoothing\n"
+                   " -i : do not use intelligent smoothing (if smoothing is off, intelligent mode has no effect)\n"
                    " -p : do not suspend execution\n"
                    " -l : choose loop count (defaullt: 10)\n"
+                   " -O : disable output\n"
                    " -h : print this help text and exit with code 1\n",
                    argv[0]);
             exit(1);

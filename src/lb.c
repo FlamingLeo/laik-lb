@@ -21,6 +21,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#define MAX(x, y) (((x) > (y)) ? (x) : (y))
 
 // helper lookup table for fast log2 for powers of 2
 static const int log2_tab[64] = {
@@ -86,6 +87,25 @@ static double alpha_mul = 0.15;   // smoothing factor in multiplicative domain (
 static double rmin = 0.7;         // minimum allowed multiplicative change per step
 static double rmax = 1.25;        // maximum allowed multiplicative change per step
 
+// partitioner tag
+static int tag = 0;
+
+// do we use incremental rcb? for allocating linked list
+static bool is_incr_rcb = false;
+
+////////////////
+// statistics // (current proc)
+////////////////
+
+static size_t weight_alloc = 0; // helper for checking how large the weight array (+ prev weights) is
+
+static int imalloc_count = 0;    // load-balancing specific malloc counts (s_malloc uses)
+static size_t imalloc_bytes = 0; // load-balancing specific malloc bytes  (s_malloc param)
+static int ifree_count = 0;      // load-balancing specific free counts   (s_malloc uses)
+static size_t ifree_bytes = 0;   // load-balancing specific free bytes    (s_malloc param)
+static size_t currently_allocated = 0;
+static size_t max_concurrently_allocated = 0;
+
 /////////////
 // utility //
 /////////////
@@ -99,7 +119,20 @@ static void *safe_malloc(size_t n)
         laik_panic("Could not allocate enough memory!");
         exit(EXIT_FAILURE);
     }
+    imalloc_count++;
+    imalloc_bytes += n;
+    currently_allocated += n;
+    max_concurrently_allocated = MAX(max_concurrently_allocated, currently_allocated);
     return p;
+}
+
+// trace free calls
+static void stat_free(void *p, size_t n)
+{
+    free(p);
+    ifree_count++;
+    ifree_bytes += n;
+    currently_allocated -= n;
 }
 
 // calculate the difference between the minimum and maximum of the times taken by each task and the mean
@@ -222,6 +255,9 @@ static bool sbl_recompute = true;      // should the list be reinitalized (secon
 // add a range to the second-from-bottom-layer range linked list
 static void rcb_sl_push(int from, int to, const Laik_Range *range)
 {
+    if (!is_incr_rcb)
+        return;
+
     LB_RCB_SBL *n = (LB_RCB_SBL *)safe_malloc(sizeof(LB_RCB_SBL));
     n->from = from;
     n->to = to;
@@ -249,7 +285,7 @@ static void rcb_sl_clear()
     while (cur)
     {
         LB_RCB_SBL *next = cur->next;
-        free(cur);
+        stat_free(cur, sizeof(LB_RCB_SBL));
         cur = next;
     }
     sbl_parents = NULL;
@@ -315,16 +351,16 @@ static void swlist_free(LB_SpaceWeightList *head)
     {
         temp = head->next;
         if (head->weights)
-            free(head->weights);
+            stat_free(head->weights, weight_alloc);
         if (head->prev_weights)
-            free(head->prev_weights);
+            stat_free(head->prev_weights, weight_alloc);
         if (head->weightpart)
             laik_free_partitioning(head->weightpart);
         if (head->weightspace)
             laik_free_space(head->weightspace);
         if (head->weightdata)
             laik_free(head->weightdata); // not actually implemented behind the scenes but it'll be correct
-        free(head);
+        stat_free(head, sizeof(LB_SpaceWeightList));
         head = temp;
     }
 }
@@ -485,7 +521,7 @@ void merge_rects_then_add_ranges(int *grid1D, int64_t width, int64_t height, Lai
                 .space = r->list->space,
                 .from = {{x0, y0, 0}},
                 .to = {{x0 + best_w, y0 + best_h, 0}}};
-            laik_append_range(r, tid, &range, 0, 0);
+            laik_append_range(r, tid, &range, tag, 0);
 
             // mark covered cells used (-1)
             for (int64_t dy = 0; dy < best_h; ++dy)
@@ -544,26 +580,65 @@ static void merge_cuboids_then_add_ranges(int *grid1D, int64_t width, int64_t he
                 size_t need = (size_t)rem_d * (size_t)rem_h;
                 if (need > buf_capacity)
                 {
-                    // allocate at least depth*height to amortize allocations
+                    // allocate at least depth * height to amortize allocations
                     size_t new_cap = (size_t)depth * (size_t)height;
                     if (new_cap < need)
                         new_cap = need;
-                    int64_t *tmp = (int64_t *)realloc(w_layer, new_cap * sizeof(int64_t));
+                    size_t new_bytes = new_cap * sizeof(int64_t);
+
+                    // account old sizes based on actual pointers
+                    size_t old_w_bytes = w_layer ? buf_capacity * sizeof(int64_t) : 0;
+                    int64_t *tmp = (int64_t *)realloc(w_layer, new_bytes);
                     if (!tmp)
                     {
-                        // allocation fails, fallback
+                        // allocation fails
                         goto fallback_single_cell;
                     }
+
+                    // realloc for w_layer
+                    if (old_w_bytes > 0)
+                    {
+                        ifree_count++;
+                        ifree_bytes += old_w_bytes;
+                        currently_allocated -= old_w_bytes;
+                    }
+                    imalloc_count++;
+                    imalloc_bytes += new_bytes;
+                    currently_allocated += new_bytes;
+                    max_concurrently_allocated = MAX(max_concurrently_allocated, currently_allocated);
                     w_layer = tmp;
-                    int64_t *tmp2 = (int64_t *)realloc(min_w_h, new_cap * sizeof(int64_t));
+
+                    // realloc min_w_h
+                    size_t old_min_bytes = min_w_h ? buf_capacity * sizeof(int64_t) : 0;
+                    int64_t *tmp2 = (int64_t *)realloc(min_w_h, new_bytes);
                     if (!tmp2)
                     {
-                        // allocation fails, fallback
+                        // allocation fails
                         free(w_layer);
+                        if (new_bytes > 0)
+                        {
+                            ifree_count++;
+                            ifree_bytes += new_bytes;
+                            currently_allocated -= new_bytes;
+                        }
                         w_layer = NULL;
                         goto fallback_single_cell;
                     }
+
+                    // realloc for min_w_h
+                    if (old_min_bytes > 0)
+                    {
+                        ifree_count++;
+                        ifree_bytes += old_min_bytes;
+                        currently_allocated -= old_min_bytes;
+                    }
+                    imalloc_count++;
+                    imalloc_bytes += new_bytes;
+                    currently_allocated += new_bytes;
+                    max_concurrently_allocated = MAX(max_concurrently_allocated, currently_allocated);
                     min_w_h = tmp2;
+
+                    // update capacity only after both succeed
                     buf_capacity = new_cap;
                 }
 
@@ -655,7 +730,7 @@ static void merge_cuboids_then_add_ranges(int *grid1D, int64_t width, int64_t he
                     .space = r->list->space,
                     .from = {{x0, y0, z0}},
                     .to = {{x0 + best_w, y0 + best_h, z0 + best_d}}};
-                laik_append_range(r, tid, &range, 0, 0);
+                laik_append_range(r, tid, &range, tag, 0);
 
                 // mark covered cells used (-1)
                 for (int64_t dz = 0; dz < best_d; ++dz)
@@ -674,8 +749,8 @@ static void merge_cuboids_then_add_ranges(int *grid1D, int64_t width, int64_t he
         }
     }
 
-    free(w_layer);
-    free(min_w_h);
+    stat_free(w_layer, buf_capacity * sizeof(int64_t));
+    stat_free(min_w_h, buf_capacity * sizeof(int64_t));
 
     laik_svg_profiler_exit(inst, __func__);
 }
@@ -1350,7 +1425,7 @@ static void sfc_2d(Laik_RangeReceiver *r, Laik_PartitionerParams *p, double *wei
     merge_rects_then_add_ranges(idxGrid, size_x, size_y, r, tidcount);
 
     // free remaining memory
-    free(idxGrid);
+    stat_free(idxGrid, N * sizeof(int));
 
     laik_svg_profiler_exit(inst, __func__);
 }
@@ -1445,7 +1520,7 @@ static void sfc_3d(Laik_RangeReceiver *r, Laik_PartitionerParams *p, double *wei
     merge_cuboids_then_add_ranges(idxGrid, size_x, size_y, size_z, r, tidcount);
 
     // free remaining memory
-    free(idxGrid);
+    stat_free(idxGrid, N * sizeof(int));
 
     laik_svg_profiler_exit(inst, __func__);
 }
@@ -1463,7 +1538,7 @@ void runSFCPartitioner(Laik_RangeReceiver *r, Laik_PartitionerParams *p)
     LB_SFC_Data *data = (LB_SFC_Data *)p->partitioner->data;
     double *weights = data->weights;
     Laik_LBAlgorithm algo = data->algo;
-    free(data); // not needed anymore
+    stat_free(data, sizeof(LB_SFC_Data)); // not needed anymore
 
     if (dims == 2)
         sfc_2d(r, p, weights, algo);
@@ -1512,7 +1587,7 @@ static void rcb_1d(Laik_RangeReceiver *r, Laik_Range *range, int fromTask, int t
         // for odd task numbers, we got from the previous step if this child has a brother
         if (rec && sbl_recompute)
             rcb_sl_push(fromTask, toTask, range);
-        laik_append_range(r, fromTask, range, 0, 0);
+        laik_append_range(r, fromTask, range, tag, 0);
         laik_svg_profiler_exit(inst, __func__);
         return;
     }
@@ -1573,7 +1648,7 @@ static void rcb_2d(Laik_RangeReceiver *r, Laik_Range *range, int fromTask, int t
         // for odd task numbers, we got from the previous step if this child has a brother
         if (rec && sbl_recompute)
             rcb_sl_push(fromTask, toTask, range);
-        laik_append_range(r, fromTask, range, 0, 0);
+        laik_append_range(r, fromTask, range, tag, 0);
         laik_svg_profiler_exit(inst, __func__);
         return;
     }
@@ -1598,7 +1673,7 @@ static void rcb_2d(Laik_RangeReceiver *r, Laik_Range *range, int fromTask, int t
     int64_t width = axis ? dy : dx;
     if (width == 1)
     {
-        laik_append_range(r, fromTask, range, 0, 0);
+        laik_append_range(r, fromTask, range, tag, 0);
         laik_svg_profiler_exit(inst, __func__);
         return;
     }
@@ -1691,7 +1766,7 @@ static void rcb_3d(Laik_RangeReceiver *r, Laik_Range *range, int fromTask, int t
         // for odd task numbers, we got from the previous step if this child has a brother
         if (rec && sbl_recompute)
             rcb_sl_push(fromTask, toTask, range);
-        laik_append_range(r, fromTask, range, 0, 0);
+        laik_append_range(r, fromTask, range, tag, 0);
         laik_svg_profiler_exit(inst, __func__);
         return;
     }
@@ -1724,7 +1799,7 @@ static void rcb_3d(Laik_RangeReceiver *r, Laik_Range *range, int fromTask, int t
                                                                : dz;
     if (length_along_axis == 1)
     {
-        laik_append_range(r, fromTask, range, 0, 0);
+        laik_append_range(r, fromTask, range, tag, 0);
         laik_svg_profiler_exit(inst, __func__);
         return;
     }
@@ -2099,7 +2174,10 @@ static double *init_weights(Laik_Partitioning *p, double ttime)
     if (!ext_weights)
     {
         if (!swl->weights)
+        {
             swl->weights = (double *)safe_malloc(size * sizeof(double));
+            weight_alloc = size * sizeof(double);
+        }
 
         memset(swl->weights, 0, size * sizeof(double));
 
@@ -2376,6 +2454,7 @@ Laik_Partitioning *laik_lb_balance(Laik_LBState state, Laik_Partitioning *partit
         nparter = laik_new_rcb_partitioner(weights);
         break;
     case LB_RCB_INCR:
+        is_incr_rcb = true;
         nparter = laik_new_incr_rcb_partitioner(weights);
         break;
     case LB_HILBERT:
@@ -2407,12 +2486,10 @@ void laik_lb_switch_and_free(Laik_Partitioning **part, Laik_Partitioning **npart
 
     Laik_Instance *inst = (*part)->group->inst;
     laik_svg_profiler_enter(inst, __func__);
-
     laik_switchto_partitioning(data, *npart, flow, LAIK_RO_None);
     laik_free_partitioning(*part);
     *part = *npart;
     *npart = NULL;
-
     laik_svg_profiler_exit(inst, __func__);
 }
 
@@ -2458,3 +2535,53 @@ void laik_lb_config_thresholds(int pstop, int pstart, double tstop, double tstar
     assert(t_stop < t_start); // also in main lb, just another sanity check here
     laik_log(1, "lb/config: configured start/stop parameters: p_stop=%d, p_start=%d, t_stop=%f, t_start=%f\n", p_stop, p_start, t_stop, t_start);
 }
+
+void laik_lb_print_stats(int id)
+{
+    if (do_print_times)
+        printf("[LAIK-LB] T%d: num. allocs: %d, bytes alloced: %ld, num. frees: %d, bytes freed: %ld, max concurrent: %ld\n", id, imalloc_count, imalloc_bytes, ifree_count, ifree_bytes, max_concurrently_allocated);
+}
+
+void laik_lb_add_malloc(size_t size)
+{
+    imalloc_count++;
+    imalloc_bytes += size;
+    currently_allocated += size;
+    max_concurrently_allocated = MAX(max_concurrently_allocated, currently_allocated);
+}
+
+void laik_lb_add_free(size_t size)
+{
+    ifree_count++;
+    ifree_bytes += size;
+    currently_allocated -= size;
+}
+
+void laik_lb_stats_store(Laik_LBDataStats *stats, Laik_Data *data)
+{
+    stats->mc = data->stat->mallocCount;   // malloc count
+    stats->mb = data->stat->mallocedBytes; // malloc bytes
+    stats->fc = data->stat->freeCount;     // freed count
+    stats->fb = data->stat->freedBytes;    // freed bytes
+    stats->bs = data->stat->byteSendCount; // bytes sent
+    stats->br = data->stat->byteRecvCount; // bytes received
+}
+
+void laik_lb_print_diff(int id, Laik_Data *data, Laik_LBDataStats *s1, Laik_LBDataStats *s2)
+{
+    if (do_print_times)
+    {
+        int mc_diff = s1->mc - s2->mc;
+        uint64_t mb_diff = s1->mb - s2->mb;
+        int fc_diff = s1->fc - s2->fc;
+        uint64_t fb_diff = s1->fb - s2->fb;
+        uint64_t bs_diff = s1->bs - s2->bs;
+        uint64_t br_diff = s1->br - s2->br;
+
+        printf("[LAIK-LB] T%d, %s, %d: mc %d, mb %ld, fc %d, fb %ld, bs %ld, br %ld\n", id, data->name, segment, mc_diff, mb_diff, fc_diff, fb_diff, bs_diff, br_diff);
+    }
+}
+
+void laik_lb_set_tag(int t) { tag = t; }
+
+void laik_lb_incr_segment() { segment++; }

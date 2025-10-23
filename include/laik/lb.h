@@ -45,6 +45,17 @@ typedef enum
     LB_GILBERT
 } Laik_LBAlgorithm;
 
+// convenience struct for data which will be benchmarked
+typedef struct
+{
+    int mc;      // malloc count
+    uint64_t mb; // malloc bytes
+    int fc;      // freed count
+    uint64_t fb; // freed bytes
+    uint64_t bs; // bytes sent
+    uint64_t br; // bytes received
+} Laik_LBDataStats;
+
 // get algorithm enum from string
 Laik_LBAlgorithm laik_strtolb(const char *str);
 
@@ -114,5 +125,26 @@ void laik_lb_config_smoothing(bool smoothing, double am, double rmi, double rma)
 
 // configure start/stop parameters (-1: leave default)
 void laik_lb_config_thresholds(int pstop, int pstart, double tstop, double tstart);
+
+// print data statistics
+void laik_lb_print_stats(int id);
+
+// add external allocation statistic
+void laik_lb_add_malloc(size_t size);
+
+// add external free statistic
+void laik_lb_add_free(size_t size);
+
+// populate a stats data struct
+void laik_lb_stats_store(Laik_LBDataStats *stats, Laik_Data *data);
+
+// print diffs between two stat structs
+void laik_lb_print_diff(int id, Laik_Data *data, Laik_LBDataStats *s1, Laik_LBDataStats *s2);
+
+// set the tag for the partitioners
+void laik_lb_set_tag(int t);
+
+// increment the segment counter (ONLY do this if you know what you're doing!)
+void laik_lb_incr_segment();
 
 #endif
